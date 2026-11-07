@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rig + Animation AI Pro — Rig Studio</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c5cff'/%3E%3Cpath d='M9 22l7-12 7 12z' fill='%23fff'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="Add3/rig-animation.css">
+</head>
+
+<body>
+    <div class="ra-app">
+
+        <!-- ===================== HEADER ===================== -->
+        <header class="ra-head">
+            <div class="logo"><i>✦</i></div>
+            <div>
+                <h1>Rig + Animation AI Pro</h1>
+                <div class="sub">Rig Auto AI Pro · Animation Auto AI Pro — kiểm tra, tự sửa, chấm điểm</div>
+            </div>
+            <span class="spacer"></span>
+            <span id="conn-pill" class="pill warn"><span class="dot"></span>Chưa kết nối engine</span>
+            <button id="btn-connect" class="small">Kết nối engine</button>
+            <button id="btn-refresh" class="small ghost" title="Cập nhật số liệu từ engine">↻</button>
+        </header>
+
+        <!-- ===================== SIDEBAR ===================== -->
+        <aside class="ra-side">
+
+            <div class="card">
+                <h2>1 · Mô tả <span class="tag">prompt</span></h2>
+                <label class="field">
+                    <span>Yêu cầu thêm cho AI (để trống = mặc định)</span>
+                    <textarea id="inp-prompt"
+                        placeholder="vd: nhân vật cầm đao, tay phải vung 3 nhịp, tóc và vạt áo bay theo; rig giữ tên bone chuẩn"></textarea>
+                </label>
+                <div class="row">
+                    <label class="field">
+                        <span>Vòng tự sửa</span>
+                        <input id="inp-rounds" type="number" min="1" max="4" step="1" value="2">
+                    </label>
+                    <label class="field">
+                        <span>Điểm tối thiểu (anim)</span>
+                        <input id="inp-minscore" type="number" min="0" max="100" step="5" value="80">
+                    </label>
+                </div>
+                <label class="check"><input id="chk-automodel" type="checkbox" checked> Tự chọn model đang gọi được</label>
+                <label class="check"><input id="chk-polish" type="checkbox" checked> Hậu kỳ clip: đóng loop · thêm ease · kẹp duration</label>
+                <label class="check"><input id="chk-secondary" type="checkbox" checked> Thêm phụ diễn (tóc / áo / vũ khí)</label>
+            </div>
+
+            <div class="card">
+                <h2>2 · Chạy</h2>
+                <div class="btn-stack">
+                    <button id="btn-rig" class="primary">🦴 Rig Auto AI Pro</button>
+                    <button id="btn-anim" class="primary">🎬 Animation Auto AI Pro</button>
+                    <button id="btn-both">⚡ Rig + Animation (một lượt)</button>
+                </div>
+                <p class="hint" style="margin:8px 0 0">
+                    Rig: AI dựng lại bộ xương → kiểm tra trùng tên / cha lạ / vòng lặp / part lạ → tự gửi lại để sửa → chấm điểm khớp nối.<br>
+                    Anim: AI sinh clip pro → kiểm tra key → hậu kỳ → chấm điểm; dưới ngưỡng thì AI pro pass rồi giữ bản tốt hơn.
+                </p>
+            </div>
+
+            <div class="card">
+                <h2>3 · Trạng thái engine</h2>
+                <div class="stats">
+                    <div class="stat"><div class="k">Bones</div><div class="v" id="st-bones">—</div></div>
+                    <div class="stat"><div class="k">Parts gắn</div><div class="v" id="st-parts">—</div></div>
+                    <div class="stat"><div class="k">Clips</div><div class="v" id="st-clips">—</div></div>
+                    <div class="stat"><div class="k">Điểm rig</div><div class="v" id="st-rigscore">—</div></div>
+                    <div class="stat"><div class="k">Điểm anim</div><div class="v" id="st-animscore">—</div></div>
+                    <div class="stat"><div class="k">Clip đang phát</div><div class="v" style="font-size:12px" id="st-clip">—</div></div>
+                </div>
+                <label class="field" style="margin-top:8px">
+                    <span>Model</span>
+                    <div class="hint" id="st-model" style="font-family:ui-monospace,Consolas,monospace">—</div>
+                </label>
+                <label class="field">
+                    <span>Clip trong engine</span>
+                    <select id="sel-clip"></select>
+                </label>
+            </div>
+
+            <div class="card">
+                <h2>4 · Xuất dữ liệu</h2>
+                <div class="row">
+                    <button id="btn-export-rig" class="small">Export rig JSON</button>
+                    <button id="btn-export-clips" class="small">Export clips JSON</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>5 · Engine</h2>
+                <div class="row">
+                    <button id="btn-toggle-engine" class="small">Hiện engine</button>
+                    <a href="pixijs_v8_engine_openai_api.html" target="_blank" style="flex:1 1 0">
+                        <button class="small" style="width:100%">Mở tab riêng ↗</button>
+                    </a>
+                </div>
+                <p class="hint" style="margin:8px 0 0">
+                    Mở thẳng file này (không có <code>?embed=1</code>) → trang sẽ mở engine ở tab khác và điều khiển qua
+                    <code>postMessage</code>. Mở từ nút <b>Rig + Anim AI Pro</b> trong engine → dùng iframe, không cần tab phụ.
+                </p>
+            </div>
+        </aside>
+
+        <!-- ===================== MAIN ===================== -->
+        <main class="ra-main">
+            <div class="ra-log" id="log"></div>
+
+            <div class="ra-engine" id="engine-box">
+                <iframe id="engine-frame" title="Rig Studio engine"></iframe>
+            </div>
+
+            <footer class="ra-foot">
+                <span id="status-pill" class="pill ok"><span class="dot"></span><span id="status-text">Sẵn sàng</span></span>
+                <span class="spacer"></span>
+                <span>Add3/rig-auto-pro.js · Add3/anim-auto-pro.js · Add3/ai-pro-core.js</span>
+                <button id="btn-clear-log" class="small ghost">Xoá log</button>
+            </footer>
+        </main>
+    </div>
+
+    <script src="Add3/rig-animation-panel.js"></script>
+</body>
+
+</html>

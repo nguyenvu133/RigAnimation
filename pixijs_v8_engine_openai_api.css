@@ -1,0 +1,19 @@
+/* =====================================================================
+   PixiJS v8 Engine Pro - Stylesheet (entry)
+   ---------------------------------------------------------------------
+   CSS đã được tách thành các module trong ./Add3/.
+   File này chỉ còn là điểm nạp (@import) nên HTML / qa_page.html /
+   make_qa_page.js không cần sửa gì.
+
+   Thứ tự @import = thứ tự cascade gốc (base → chat → viewer → timeline).
+   Lưu ý: @import BẮT BUỘC nằm trên mọi rule khác trong file CSS.
+   ===================================================================== */
+
+@import url("Add3/base.css");
+/* scrollbar, checkerboard, timeline-grid, key-kf, canvas */
+@import url("Add3/chat.css");
+/* ảnh + tin nhắn + markdown + code block + typing */
+@import url("Add3/image-viewer.css");
+/* overlay #img-viewer */
+@import url("Add3/timeline.css");
+/* .track-c0 … .track-c5 */

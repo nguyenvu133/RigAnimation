@@ -1,0 +1,22 @@
+them tinh nang nhap key vao kiem tra xem key đó có hoạt động không auto
+
+them model gemini-nano-banana-2.1 cua Google AI Studio de gen image 
+
+https://api.xkiro.com/v1
+
+https://api.apinex.bond/v1
+
+Kimi https://api.moonshot.ai/v1
+https://api.moonshot.cn/v1/chat/completions
+
+openrouter.ai https://openrouter.ai/api/v1/responses
+
+https://agentrouter.org
+
+https://openrouter.ai/api/v1                 ========
+
+https://api.tokenrouter.com/v1
+
+https://tokenharbor.ai/v1		     ========
+
+

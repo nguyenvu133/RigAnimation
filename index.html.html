@@ -1,0 +1,741 @@
+﻿<!DOCTYPE html>
+<html lang="vi" class="h-full">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rig Studio — ChatGPT · PixiJS v8 · Spine Skeleton</title>
+    <!-- favicon inline (data URI) → không phát sinh request /favicon.ico 404 -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f46e5'/%3E%3Ccircle cx='16' cy='11' r='4.5' fill='%23fff'/%3E%3Cpath d='M7 27c0-5 4-8 9-8s9 3 9 8z' fill='%23fff'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@8.6/dist/pixi.min.js"></script>
+    <link rel="stylesheet" href="pixijs_v8_engine_openai_api.css">
+    <!-- engine nạp NGAY trong <head> (defer) để không bị chặn bởi CDN Tailwind chậm/mất mạng -->
+    <!-- spine_rig.js phải nạp TRƯỚC Add3/rig-core.js (cung cấp SpineBone/SpineSkeleton/solveTwoBoneIK) -->
+    <script defer src="spine_rig.js"></script>
+    <script defer src="assets_import.js"></script>
+    <!-- ===== ENGINE chia thành module (Add3/) — thứ tự nạp quan trọng ===== -->
+    <script defer src="Add3/atlas.js"></script>          <!-- ATLAS_PARTS, PartAtlas, AutoNamer -->
+    <script defer src="Add3/rig-core.js"></script>       <!-- SpineRig, AnimationSystem, EditorScene, Engine -->
+    <script defer src="Add3/ui.js"></script>             <!-- DEFAULT_CLIPS + helper UI -->
+    <script defer src="Add3/chat.js"></script>           <!-- Chat, ChatImages, ImageViewer, markdown -->
+    <script defer src="Add3/apply-ai.js"></script>       <!-- parseAIJSON, applyAIJSON, sanitizeClips -->
+    <script defer src="Add3/models.js"></script>         <!-- session, chọn model, AI_PROVIDERS, API keys -->
+    <script defer src="Add3/svg-character.js"></script>  <!-- SvgCharacter (rig từ SVG) -->
+    <script defer src="Add3/atlas-builder.js"></script>  <!-- ảnh thật → part → rig → atlas JSON+PNG -->
+    <script defer src="Add3/atlas-builder-ui.js"></script> <!-- panel "Tách ảnh → Atlas" -->
+    <script defer src="Add3/setup-review.js"></script>     <!-- panel "Soi Setup" so với ảnh gốc -->
+    <script defer src="Add3/boot.js"></script>           <!-- boot + export global + tab UI -->
+    <!-- 15 công cụ rig nâng cao (kéo bone, IK, pose, timeline, onion skin...) -->
+    <script defer src="rig_advanced.js"></script>
+    <!-- 15 tính năng AI nâng cao cho animation -->
+    <script defer src="anim_ai.js"></script>
+    <!-- Rig Auto AI Pro + Animation Auto AI Pro (module Add3) + cầu nối AddRigAnimation.html -->
+    <script defer src="Add3/ai-pro-core.js"></script>
+    <script defer src="Add3/rig-auto-pro.js"></script>
+    <script defer src="Add3/anim-auto-pro.js"></script>
+    <script defer src="Add3/bridge.js"></script>
+    <!-- Rig SVG nằm trong Add3/svg-character.js; pixijs_v8_engine_openai_api.js giờ chỉ là entry mỏng -->
+    <style>
+        /* fallback khi CDN Tailwind chưa/chặn tải: giữ bố cục 3 cột ổn định */
+        #sidebar { width: 260px; flex: 0 0 260px; overflow-y: auto; }
+        body > section { width: 600px; flex: 0 0 600px; }
+        body > main { flex: 1 1 auto; min-width: 0; min-height: 0; }
+        #pixi-container { position: absolute; inset: 0; }
+        #chat-messages { min-height: 0; overflow-y: auto; }
+        #chat-input, input[type="password"], input[type="text"] { width: 100%; }
+        #api-modal { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.4); color: #1e293b; }
+        #api-modal > div { background: #fff; max-width: 512px; width: 100%; margin: 40px auto; padding: 20px; border-radius: 16px; max-height: 88vh; overflow-y: auto; }
+        #api-modal input { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; margin: 4px 0; font-family: monospace; font-size: 12px; }
+        .part-chip { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 2px; padding: 3px 2px; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; min-height: 58px; overflow: hidden; }
+        .part-chip:hover { border-color: #34d399; }
+        .part-chip .part-key { font-size: 8px; line-height: 1.1; font-family: monospace; color: #64748b; width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #panel-parts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; padding: 6px; align-content: start; overflow-y: auto; }
+        /* ĐỒNG BỘ Parts ↔ Assets: cùng padding/gap/bo góc/chiều cao thẻ để đổi tab
+           không bị nhảy bố cục. Assets dùng 3 cột vì thẻ có tên file dài hơn. */
+        #panel-assets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 6px; align-content: start; overflow-y: auto; }
+        #panel-assets > div { min-height: 58px; border-radius: 6px; }
+        #panel-assets > div:hover { border-color: #34d399; }
+        /* thẻ asset và chip part cùng chiều cao để 2 tab không nhảy bố cục */
+        .part-chip { min-height: 58px; }
+        #bones-list { overflow-y: auto; }
+        #toast-message { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #0f172a; color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 12px; z-index: 80; }
+        #toast-message.hidden { display: none; }
+        #drop-hint { display: none; }
+        #drop-hint.flex { display: flex; }
+    </style>
+</head>
+
+<body class="h-full overflow-hidden bg-white text-slate-800 flex select-none"
+    style="font-family:Inter,'Segoe UI',Roboto,Arial,sans-serif">
+
+    <!-- ===================== SIDEBAR ===================== -->
+    <aside id="sidebar" class="w-[260px] shrink-0 bg-[#f9f9f9] border-r border-slate-200 flex flex-col">
+        <div class="p-3">
+            <div class="flex items-center justify-between px-1 mb-2">
+                <div class="flex items-center gap-2 font-semibold text-sm">
+                    <span class="w-6 h-6 rounded-full bg-black text-white grid place-items-center"><i
+                            class="fa-solid fa-feather text-[10px]"></i></span>
+                    Rig Studio
+                </div>
+                <button onclick="toggleSidebar()" class="text-slate-500 hover:text-slate-800"><i
+                        class="fa-solid fa-table-columns"></i></button>
+            </div>
+            <button onclick="newChat()"
+                class="w-full flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-[13px] font-medium hover:bg-slate-50">
+                <i class="fa-solid fa-pen-to-square text-slate-500"></i> Cuộc trò chuyện mới
+            </button>
+        </div>
+        <div class="px-3 pb-1 text-[11px] font-semibold text-slate-500">Hôm nay</div>
+        <div id="chat-history" class="flex-1 overflow-y-auto px-2 space-y-0.5 text-[13px]"></div>
+        <div class="border-t border-slate-200 p-3 space-y-2">
+            <button onclick="autoNameParts()"
+                class="w-full flex items-center gap-2 rounded-lg bg-[#0d0d0d] hover:bg-black text-white px-3 py-2 text-[12px] font-semibold">
+                <i class="fa-solid fa-tags"></i> Auto name bộ phận
+            </button>
+            <button onclick="autoRigSpine()"
+                class="w-full flex items-center gap-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 text-[12px] font-semibold">
+                <i class="fa-solid fa-bone"></i> Auto Rig (Spine)
+            </button>
+            <!-- ảnh THẬT → part → rig → atlas JSON + PNG (Add3/atlas-builder.js) -->
+            <button onclick="openAtlasBuilder()"
+                class="w-full flex items-center gap-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white px-3 py-2 text-[12px] font-semibold"
+                title="Tách ảnh thật (PNG nền trong suốt) thành từng bộ phận → dựng rig Spine → xuất atlas JSON + PNG">
+                <i class="fa-solid fa-scissors"></i> Tách ảnh → Atlas
+            </button>
+            <!-- soi rig đã ghép và so sánh với ảnh gốc (Add3/setup-review.js) -->
+            <button onclick="SetupReview.open()"
+                class="w-full flex items-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 text-[12px] font-semibold"
+                title="Xem rig đã ghép cạnh ảnh gốc, chấm điểm khớp silhouette và tự ghép các part còn rời">
+                <i class="fa-solid fa-magnifying-glass-chart"></i> Soi Setup (so ảnh gốc)
+            </button>
+            <button onclick="setWorkTab('anim')"
+                class="w-full flex items-center gap-2 rounded-lg bg-fuchsia-700 hover:bg-fuchsia-800 text-white px-3 py-2 text-[12px] font-semibold"
+                title="15 tính năng AI nâng cao cho animation: sinh clip, bộ clip đầy đủ, pro pass, lip-sync, state machine, blend, tự cải thiện...">
+                <i class="fa-solid fa-clapperboard"></i> Anim AI nâng cao (15)
+            </button>
+            <button onclick="setWorkTab('advanced')"
+                class="w-full flex items-center gap-2 rounded-lg bg-slate-800 hover:bg-black text-white px-3 py-2 text-[12px] font-semibold"
+                title="15 công cụ rig nâng cao: kéo bone, IK, pose, undo, timeline, onion skin, phụ diễn tự động">
+                <i class="fa-solid fa-sliders"></i> Rig nâng cao (15)
+            </button>
+            <button onclick="deepseekProRig()"
+                class="w-full flex items-center gap-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 text-[12px] font-semibold"
+                title="Tự chọn model đang gọi được (DeepSeek → AgentRouter → Kimi → OpenRouter → ...) rồi rig + animation, tự áp JSON vào engine">
+                <i class="fa-solid fa-robot"></i> Auto Rig + Animation
+            </button>
+            <div class="space-y-2">
+                <select id="model-selector" onchange="changeModel(this.value)" 
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-[12px] font-medium outline-none focus:border-slate-400">
+                    <option value="openai:gpt-4o-mini">🤖 ChatGPT (GPT-4o-mini)</option>
+                    <option value="openai:gpt-4o">🤖 ChatGPT (GPT-4o)</option>
+                    <option value="deepseek:deepseek-chat">🔮 DeepSeek (Chat)</option>
+                    <option value="deepseek:deepseek-coder">🔮 DeepSeek (Coder)</option>
+                    <option value="gemini:gemini-pro">⭐ Gemini (Pro)</option>
+                    <option value="gemini:gemini-ultra">⭐ Gemini (Ultra)</option>
+                    <option value="glm:glm-4">🧠 GLM-4</option>
+                    <option value="glm:glm-3-turbo">🧠 GLM-3-Turbo</option>
+                    <option value="deepseek:deepseek-reasoner">🔮 DeepSeek (Reasoner)</option>
+                    <option value="agentrouter:gpt-5.6-sol">🛰️ GPT-5.6-sol (AgentRouter)</option>
+                    <option value="agentrouter:gpt-6-astra">🛰️ GPT-6-astra (AgentRouter)</option>
+                    <option value="agentrouter:gpt-6.1-sol">🛰️ GPT-6.1-sol (AgentRouter)</option>
+                                        <option value="xkiro:mistralai/ministral-3b">Ministral 3B (xKiro free)</option>
+                    <option value="xkiro:cohere/command-r-08-2024">Command R (xKiro free)</option>
+                    <option value="apinex:free/qwen-3.8-max">Qwen 3.8 Max (APInex free)</option>
+                    <option value="apinex:free/deepseek-v4.1-flash">DeepSeek v4.1 Flash (APInex free)</option>
+                    <option value="apinex:free/gemini-3.8-flash">Gemini 3.8 Flash (APInex free)</option>
+                    <option value="apinex:free/gpt-6-luna">GPT-6 Luna (APInex free)</option>
+                    <option value="apinex:free/kimi-k3">Kimi K3 (APInex free)</option>
+                    <option value="apinex:free/glm-5.3">GLM 5.3 (APInex free)</option>
+                    <option value="apinex:grok-imagine-2">Grok Imagine 2 (APInex image)</option>
+                    <option value="apinex:gemini-3.1-flash-image">Gemini 3.1 Flash Image (APInex image)</option>
+                    <option value="kimi:kimi-k2-0905">🌙 Kimi-K2-0905 (Moonshot AI)</option>
+                    <option value="kimi:kimi-latest">🌙 Kimi-Latest (Moonshot AI)</option>
+                    <option value="openrouter:openai/gpt-4o">🚀 OpenRouter (GPT-4o)</option>
+                    <option value="openrouter:openai/gpt-4o-mini">🚀 OpenRouter (GPT-4o-mini)</option>
+                    <option value="openrouter:openai/gpt-4o-2024-11-20">🚀 OpenRouter (GPT-4o Nov)</option>
+                    <option value="openrouter:anthropic/claude-3.5-sonnet">🚀 OpenRouter (Claude 3.5 Sonnet)</option>
+                    <option value="openrouter:google/gemini-2.0-flash-001">🚀 OpenRouter (Gemini 2.0 Flash)</option>
+                    <option value="openrouter:deepseek/deepseek-chat">🚀 OpenRouter (DeepSeek Chat)</option>
+                    <option value="openrouter:mistralai/mistral-large">🚀 OpenRouter (Mistral Large)</option>
+                    <option value="openrouter:qwen/qwen-2.5-72b-instruct">🚀 OpenRouter (Qwen 2.5 72B)</option>
+                    <option value="openrouter:openrouter/auto">🚀 OpenRouter (Auto)</option>
+                </select>
+                <button onclick="openKeyModal()"
+                    class="w-full flex items-center gap-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-3 py-2 text-[12px] font-medium">
+                    <i class="fa-solid fa-key text-amber-500"></i> Cài đặt API Keys
+                </button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- ===================== CHAT ===================== -->
+    <main class="flex-1 min-w-0 flex flex-col border-r border-slate-200">
+        <div class="h-12 shrink-0 flex items-center justify-between px-4 border-b border-slate-100">
+            <!-- tiêu đề + badge: badge là khối cố định, không co, không xuống dòng -->
+            <div class="flex items-center gap-2 text-[13px] font-semibold min-w-0 flex-1">
+                <span id="chat-title" class="truncate min-w-0">Rig Quan Vũ từ atlas</span>
+                <span id="current-model-badge"
+                    class="shrink-0 whitespace-nowrap text-[9px] leading-[14px] px-1.5 rounded font-bold text-white bg-blue-500"
+                    style="display:inline-block;min-width:max-content">GPT-4o-mini</span>
+                <span id="badge-api-mode"
+                    class="shrink-0 whitespace-nowrap text-[9px] leading-[14px] px-1.5 rounded font-bold text-white bg-amber-500"
+                    style="display:inline-block;min-width:max-content">Mock</span>
+            </div>
+            <div class="flex items-center gap-1 text-slate-500 shrink-0">
+                <button onclick="Engine.snapshot()" class="px-2 py-1.5 rounded-md hover:bg-slate-100 text-xs"
+                    title="Xuất PNG"><i class="fa-solid fa-camera"></i></button>
+                <button onclick="downloadPackage()" class="px-2 py-1.5 rounded-md hover:bg-slate-100 text-xs"
+                    title="Tải JSON"><i class="fa-solid fa-download"></i></button>
+                <button onclick="exportSpineJSON()" class="px-2 py-1.5 rounded-md hover:bg-slate-100 text-xs"
+                    title="Export Spine JSON"><i class="fa-solid fa-share-nodes"></i></button>
+                <button onclick="fallbackModelConfig()" class="px-2 py-1.5 rounded-md hover:bg-slate-100 text-xs"
+                    title="Tự chọn model đang gọi được (dùng được key .env/localStorage)"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+                <button onclick="openKeyModal()" class="px-2 py-1.5 rounded-md hover:bg-slate-100 text-xs"
+                    title="API key"><i class="fa-solid fa-gear"></i></button>
+            </div>
+        </div>
+
+        <div id="chat-messages" class="flex-1 overflow-y-auto py-4"></div>
+
+        <div class="p-3 pt-0">
+            <div class="max-w-3xl mx-auto">
+                <div
+                    class="rounded-[26px] border border-slate-300 bg-white shadow-sm focus-within:border-slate-400 px-3 py-2">
+                    <textarea id="chat-input" rows="1"
+                        placeholder="Nhắn cho AI — ví dụ: “rig Quan Vũ kiểu Spine rồi làm animation vung đao”"
+                        class="w-full resize-none bg-transparent px-2 py-2 text-[14px] outline-none placeholder:text-slate-400 max-h-40"></textarea>
+                    <div class="flex items-end justify-between gap-2 px-1">
+                        <!-- hàng nút gợi ý: wrap trong vùng co giãn, nút gửi luôn ở góc phải -->
+                        <div class="flex flex-wrap items-center gap-1 text-slate-500 text-xs min-w-0 flex-1">
+                            <button onclick="quickPrompt('Tự đặt tên các bộ phận của nhân vật')"
+                                class="px-2 py-1 rounded-full hover:bg-slate-100">Auto name</button>
+                            <button onclick="quickPrompt('Tạo rig kiểu Spine cho Quan Vũ')"
+                                class="px-2 py-1 rounded-full hover:bg-slate-100">Rig</button>
+                            <button onclick="quickPrompt('Tạo animation vung đao')"
+                                class="px-2 py-1 rounded-full hover:bg-slate-100">Animation</button>
+                            <button onclick="quickPrompt('Làm animation combat pro: vung đao 3 nhịp có wind-up, follow-through, tóc và đai áo phụ diễn')"
+                                class="px-2 py-1 rounded-full hover:bg-slate-100">Combat pro</button>
+                            <button onclick="aiCreateCharacter()" id="btn-ai-char"
+                                class="px-2 py-1 rounded-full bg-purple-50 text-purple-700 hover:bg-purple-100 font-medium"
+                                title="gpt-6-astra vẽ SVG có part tách rời rồi rig + animation">✨ Tạo ảnh AI</button>
+                            <button onclick="aiGenerateRasterImage()" id="btn-ai-image"
+                                class="px-2 py-1 rounded-full bg-sky-50 text-sky-700 hover:bg-sky-100 font-medium whitespace-nowrap"
+                                title="Gọi /v1/images/generations (cần key được cấp model ảnh)">🖼 Ảnh AI</button>
+                        </div>
+                        <button id="btn-send-chat"
+                            class="w-8 h-8 shrink-0 self-end rounded-full bg-black text-white grid place-items-center hover:bg-slate-800">
+                            <i class="fa-solid fa-arrow-up text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+                    <div class="text-center text-[10px] text-slate-400 mt-2">AI có thể mắc lỗi. JSON do AI sinh được
+                    kiểm tra trước khi áp vào engine.</div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ===================== VIEWPORT ===================== -->
+    <section class="w-[600px] shrink-0 flex flex-col bg-[#f7f7f8]">
+        <div class="h-12 shrink-0 flex items-center justify-between px-3 border-b border-slate-200 bg-white">
+            <div class="flex items-center gap-1 text-[12px]">
+                <button id="tab-setup" onclick="setWorkTab('setup')"
+                    class="px-2.5 py-1.5 rounded-md bg-slate-900 text-white font-medium">Setup</button>
+                <button id="tab-animate" onclick="setWorkTab('animate')"
+                    class="px-2.5 py-1.5 rounded-md hover:bg-slate-100 font-medium">Animate</button>
+                <button id="tab-advanced" onclick="setWorkTab('advanced')"
+                    class="px-2.5 py-1.5 rounded-md hover:bg-slate-100 font-medium">Advanced</button>
+                <button onclick="downloadPackage()"
+                    class="px-2.5 py-1.5 rounded-md hover:bg-slate-100 font-medium">Export</button>
+                <button onclick="pickAssets()"
+                    class="px-2.5 py-1.5 rounded-md bg-emerald-600 text-white font-semibold hover:bg-emerald-700 flex items-center gap-1">
+                    <i class="fa-solid fa-file-arrow-up"></i> Import
+                </button>
+            </div>
+            <div class="flex items-center gap-2 text-[11px] text-slate-600">
+                <label class="flex items-center gap-1 cursor-pointer">
+                    <input type="checkbox" checked id="chk-skeleton-toggle" onchange="toggleSkeletonView()"
+                        class="accent-purple-600"> Skeleton
+                </label>
+                <button onclick="switchCharacter(false)"
+                    class="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">Atlas 2</button>
+                <button onclick="switchCharacter(true)"
+                    class="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">Pose 1</button>
+            </div>
+        </div>
+
+        <div class="relative flex-1 min-h-0 flex items-center justify-center overflow-hidden grid-checkerboard"
+            id="main-viewport-container">
+            <div id="pixi-container" class="absolute inset-0"></div>
+            <div
+                class="absolute top-3 left-3 flex items-center gap-2 rounded-lg bg-white/90 border border-slate-200 px-2.5 py-1.5 text-[11px]">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span id="rig-status-text" class="text-slate-600">Đang khởi động…</span>
+            </div>
+
+            <!-- thả file để import -->
+            <div id="drop-hint"
+                class="pointer-events-none absolute inset-3 rounded-xl border-2 border-dashed border-emerald-400 bg-emerald-50/70 hidden items-center justify-center text-emerald-700 text-sm font-semibold z-20">
+                <div class="text-center">
+                    <i class="fa-solid fa-cloud-arrow-up text-2xl mb-1 block"></i>
+                    Thả ảnh / GIF / video vào đây để import
+                </div>
+            </div>
+            <button onclick="togglePlayState()"
+                class="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-black text-white grid place-items-center shadow-lg">
+                <i class="fa-solid fa-pause play-icon text-xs"></i>
+            </button>
+            <div class="absolute bottom-3 left-3 text-[10px] font-mono text-slate-500">
+                <span id="fps-label">60</span> fps · <span id="current-frame">0.00</span>s / <span
+                    id="clip-duration">2.0</span>s
+            </div>
+        </div>
+
+        <!-- timeline -->
+        <div class="h-[104px] shrink-0 border-t border-slate-200 bg-white flex flex-col">
+            <div class="h-8 px-3 flex items-center justify-between text-[11px]">
+                <div class="flex items-center gap-2">
+                    <select id="select-clip" onchange="Engine.animation.setCurrent(this.value)"
+                        class="rounded border border-slate-200 text-[11px] px-1.5 py-0.5"></select>
+                    <span class="text-slate-400">Clip</span>
+                </div>
+                <span class="text-slate-500">Bone tracks</span>
+            </div>
+            <div class="flex-1 flex overflow-hidden">
+                <div class="w-32 border-r border-slate-100 overflow-y-auto text-[10px] font-mono" id="tracks-names">
+                </div>
+                <div class="flex-1 timeline-grid relative overflow-hidden">
+                    <div
+                        class="h-5 border-b border-slate-100 flex items-center justify-between px-2 text-[9px] font-mono text-slate-400">
+                        <span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span>
+                    </div>
+                    <div class="relative" id="dopesheet-keyframes-layer"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- bones + parts + assets -->
+        <div id="library-block" class="h-[240px] shrink-0 border-t border-slate-200 bg-white flex flex-col">
+            <div class="h-8 shrink-0 flex items-center justify-between px-2 border-b border-slate-100 text-[11px]">
+                <div class="flex gap-1">
+                    <button id="tab-parts" onclick="setLibraryTab('parts')" class="px-2 py-1 rounded bg-slate-900 text-white font-medium">Parts</button>
+                    <button id="tab-assets" onclick="setLibraryTab('assets')" class="px-2 py-1 rounded hover:bg-slate-100 font-medium">Assets</button>
+                    <button id="tab-advanced-rig" onclick="setLibraryTab('advanced')" class="px-2 py-1 rounded hover:bg-slate-100 font-medium">Advanced Rig</button>
+                    <button id="tab-anim-ai" onclick="setLibraryTab('anim')" class="px-2 py-1 rounded hover:bg-slate-100 font-medium">Anim AI (15)</button>
+                </div>
+                <div class="flex items-center gap-1">
+                    <button onclick="pickAssets()" class="text-[10px] px-2 py-1 rounded bg-emerald-600 text-white font-medium hover:bg-emerald-700">
+                        <i class="fa-solid fa-file-arrow-up mr-1"></i>Import
+                    </button>
+                    <input id="asset-file" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/ogg"
+                           class="hidden" onchange="onAssetFiles(this.files)">
+                    <!-- ô lọc chỉ có nghĩa ở tab Parts; tab khác ẩn đi để không chiếm chỗ -->
+                    <input id="part-search" placeholder="lọc…" oninput="renderPartsLibrary(this.value)"
+                           class="w-20 rounded border border-slate-200 px-1 py-0.5 text-[10px] outline-none">
+                </div>
+            </div>
+            <div class="flex-1 flex min-h-0">
+                <div class="w-1/2 border-r border-slate-100 flex flex-col">
+                    <div class="h-7 flex items-center justify-between px-2 text-[10px] text-slate-500">
+                        <span>Spine Bones (<span id="bone-count">0</span>)</span>
+                        <button onclick="autoRigSpine()" class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Auto Rig</button>
+                    </div>
+                    <div id="bones-list" class="flex-1 overflow-y-auto px-1.5 pb-2"></div>
+                </div>
+                <div class="w-1/2 flex flex-col min-h-0">
+                    <!-- Parts: lưới 5 cột chip ảnh -->
+                    <div id="panel-parts" class="flex-1 overflow-y-auto p-1.5 grid grid-cols-5 gap-1 content-start"></div>
+                    <!-- Assets: cùng khung, lưới 3 cột thẻ asset (đồng bộ padding/gap với Parts) -->
+                    <div id="panel-assets" class="flex-1 overflow-y-auto p-1.5 grid grid-cols-3 gap-1 content-start" style="display:none"></div>
+                    <div id="advanced-rig-panel" class="flex-1 overflow-y-auto p-3" style="display:none">
+                        <div class="space-y-4">
+                            <!-- 1. Direct manipulation -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">1. Direct Bone Manipulation</h4>
+                                <p class="text-[10px] text-slate-500 mb-2">Click + drag to rotate, Alt+drag to move bones</p>
+                            </div>
+                            
+                            <!-- 2. IK Toggle -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">2. IK (Inverse Kinematics)</h4>
+                                <button id="btn-toggle-ik" onclick="RigAdvanced.toggleIK()" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">Toggle IK for Legs</button>
+                            </div>
+                            
+                            <!-- 3. Bone Management -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">3. Bone Management</h4>
+                                <div class="flex flex-wrap gap-1">
+                                    <button onclick="RigAdvanced.createBone(prompt('Bone name:'), Engine.selectedBone)" class="px-2 py-1 rounded bg-blue-100 text-blue-700 text-xs hover:bg-blue-200">Create</button>
+                                    <button onclick="RigAdvanced.duplicateBone(Engine.selectedBone)" class="px-2 py-1 rounded bg-blue-100 text-blue-700 text-xs hover:bg-blue-200">Duplicate</button>
+                                    <button onclick="RigAdvanced.deleteBone(Engine.selectedBone)" class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs hover:bg-red-200">Delete</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 4. Advanced Bone Editor -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">4. Advanced Bone Properties</h4>
+                                <div class="grid grid-cols-3 gap-1">
+                                    <label class="text-[9px] text-slate-500">X<input type="number" id="inp-bone-x" class="w-full rounded border px-1 py-0.5 text-[11px]"></label>
+                                    <label class="text-[9px] text-slate-500">Y<input type="number" id="inp-bone-y" class="w-full rounded border px-1 py-0.5 text-[11px]"></label>
+                                    <label class="text-[9px] text-slate-500">R°<input type="number" id="inp-bone-rot" class="w-full rounded border px-1 py-0.5 text-[11px]"></label>
+                                    <label class="text-[9px] text-slate-500">Len<input type="number" id="inp-bone-length" class="w-full rounded border px-1 py-0.5 text-[11px]"></label>
+                                    <label class="text-[9px] text-slate-500">SX<input type="number" step="0.05" id="inp-bone-scalex" class="w-full rounded border px-1 py-0.5 text-[11px]"></label>
+                                    <label class="text-[9px] text-slate-500">SY<input type="number" step="0.05" id="inp-bone-scaley" class="w-full rounded border px-1 py-0.5 text-[11px]"></label>
+                                </div>
+                                <div class="flex items-center gap-2 mt-1 text-[10px] text-slate-600">
+                                    <label class="flex items-center gap-1"><input type="checkbox" id="chk-bone-inherit-rot" class="accent-purple-600">inherit R</label>
+                                    <label class="flex items-center gap-1"><input type="checkbox" id="chk-bone-inherit-scale" class="accent-purple-600">inherit S</label>
+                                    <button onclick="RigAdvanced.applyBoneInputs()" class="ml-auto px-2 py-1 rounded bg-slate-800 text-white text-[11px]">Apply</button>
+                                </div>
+                                <div class="mt-1 text-[10px] text-slate-500">Đổi cha:<br>
+                                    <input id="inp-bone-parent" class="w-[45%] rounded border px-1 py-0.5 text-[10px] mr-1" placeholder="tên bone cha">
+                                    <button onclick="RigAdvanced.reparentBone(Engine.selectedBone, document.getElementById('inp-bone-parent').value)" class="px-2 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px]">Đổi cha</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 5. Lock & Hide -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">5. Lock & Hide Bones</h4>
+                                <div class="flex gap-1">
+                                    <button id="btn-toggle-lock" onclick="RigAdvanced.toggleLock(Engine.selectedBone)" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">Lock</button>
+                                    <button id="btn-toggle-hide" onclick="RigAdvanced.toggleHide(Engine.selectedBone)" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">Hide</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 6. Symmetrize -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">6. Symmetrize Skeleton</h4>
+                                <button onclick="RigAdvanced.symmetrize()" class="px-2 py-1 rounded bg-purple-100 text-purple-700 text-xs hover:bg-purple-200">Mirror L↔R</button>
+                            </div>
+                            
+                            <!-- 7. Copy/Paste/Mirror Pose -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">7. Pose Tools</h4>
+                                <div class="flex flex-wrap gap-1">
+                                    <button onclick="RigAdvanced.copyPose()" class="px-2 py-1 rounded bg-green-100 text-green-700 text-xs hover:bg-green-200">Copy Pose</button>
+                                    <button onclick="RigAdvanced.pastePose(false)" class="px-2 py-1 rounded bg-green-100 text-green-700 text-xs hover:bg-green-200">Paste</button>
+                                    <button onclick="RigAdvanced.pastePose(true)" class="px-2 py-1 rounded bg-green-100 text-green-700 text-xs hover:bg-green-200">Mirror Paste</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 8. Undo/Redo -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">8. Undo / Redo</h4>
+                                <div class="flex gap-1">
+                                    <button onclick="RigAdvanced.undo()" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">Undo (Ctrl+Z)</button>
+                                    <button onclick="RigAdvanced.redo()" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">Redo</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 9. Pose Library -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">9. Pose Library (6 slots)</h4>
+                                <div class="grid grid-cols-3 gap-1">
+                                    <button onclick="RigAdvanced.saveSlot(0)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs">Save 1</button>
+                                    <button onclick="RigAdvanced.applySlot(0)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs">Load 1</button>
+                                    <button onclick="RigAdvanced.delSlot(0)" class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs">Del 1</button>
+                                    <button onclick="RigAdvanced.saveSlot(1)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs">Save 2</button>
+                                    <button onclick="RigAdvanced.applySlot(1)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs">Load 2</button>
+                                    <button onclick="RigAdvanced.delSlot(1)" class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs">Del 2</button>
+                                    <button onclick="RigAdvanced.saveSlot(2)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs">Save 3</button>
+                                    <button onclick="RigAdvanced.applySlot(2)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs">Load 3</button>
+                                    <button onclick="RigAdvanced.delSlot(2)" class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs">Del 3</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 10. Key Interpolation -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">10. Key Interpolation</h4>
+                                <select onchange="RigAdvanced.setInterpolation(this.value)" class="w-full rounded border px-1 py-0.5 text-xs">
+                                    <option value="linear">Linear</option>
+                                    <option value="ease">Ease</option>
+                                    <option value="easeIn">Ease In</option>
+                                    <option value="easeOut">Ease Out</option>
+                                    <option value="easeInOut">Ease In-Out</option>
+                                    <option value="step">Step</option>
+                                </select>
+                            </div>
+                            
+                            <!-- 11. Keyframe Editing -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">11. Keyframe Tools</h4>
+                                <div class="flex gap-1">
+                                    <button onclick="RigAdvanced.addKeyframe()" class="px-2 py-1 rounded bg-cyan-100 text-cyan-700 text-xs hover:bg-cyan-200">Add Key</button>
+                                    <button onclick="RigAdvanced.deleteKeyframe()" class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs hover:bg-red-200">Del Key</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 12. Playback Speed -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">12. Playback Speed</h4>
+                                <div class="flex gap-1">
+                                    <button onclick="RigAdvanced.setPlaybackSpeed(0.5)" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs">0.5x</button>
+                                    <button onclick="RigAdvanced.setPlaybackSpeed(1)" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs">1x</button>
+                                    <button onclick="RigAdvanced.setPlaybackSpeed(2)" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs">2x</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 13. Clip Management -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">13. Clip Management</h4>
+                                <div class="flex flex-wrap gap-1">
+                                    <button onclick="RigAdvanced.createClip(prompt('Clip name:'), parseFloat(prompt('Duration (s):', '2')))" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 text-xs">New Clip</button>
+                                    <button onclick="RigAdvanced.duplicateClip(Engine.animation.currentClip && Engine.animation.currentClip.id)" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 text-xs">Duplicate</button>
+                                    <button onclick="RigAdvanced.renameClip(Engine.animation.currentClip && Engine.animation.currentClip.id, prompt('Tên clip:'))" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 text-xs">Rename</button>
+                                    <button onclick="RigAdvanced.setClipDuration(Engine.animation.currentClip && Engine.animation.currentClip.id, parseFloat(prompt('Duration (s):', Engine.animation.currentClip ? Engine.animation.currentClip.duration : 1)))" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 text-xs">Duration</button>
+                                    <button onclick="RigAdvanced.deleteClip(Engine.animation.currentClip && Engine.animation.currentClip.id)" class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs">Delete</button>
+                                </div>
+                            </div>
+                            
+                            <!-- 14. Onion Skin -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">14. Onion Skin & Trục xương</h4>
+                                <button id="btn-toggle-onion" onclick="RigAdvanced.toggleOnion()" class="px-2 py-1 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">Toggle Onion Skin</button>
+                                <label class="flex items-center gap-1 text-[10px] text-slate-600 mt-1">
+                                    <input type="checkbox" id="chk-bone-axes" class="accent-purple-600"> hiện trục xương đúng hướng part
+                                </label>
+                            </div>
+                            
+                            <!-- 15. Secondary Motion -->
+                            <div class="border-b pb-3">
+                                <h4 class="font-semibold text-xs mb-2 text-slate-700">15. Auto Secondary Motion</h4>
+                                <button onclick="RigAdvanced.enableSecondaryMotion()" class="px-2 py-1 rounded bg-pink-100 text-pink-700 text-xs hover:bg-pink-200">Sinh phụ diễn (tóc/vạt áo/vũ khí)</button>
+                                <p class="text-[10px] text-slate-500 mt-1">Thêm track trễ pha vào clip hiện tại từ chuyển động của thân.</p>
+                            </div>
+                            <div id="rig-adv-info" class="text-[10px] text-slate-500 font-mono pt-1">—</div>
+                        </div>
+                    </div>
+                    <div id="anim-ai-panel" class="flex-1 overflow-y-auto p-3" style="display:none">
+                        <div class="space-y-3">
+                            <div class="flex items-center gap-2">
+                                <input id="anim-ai-prompt" placeholder="Mô tả chuyển động — vd: vung đao 3 nhịp, tóc bay theo"
+                                    class="flex-1 rounded border-slate-300 px-2 py-1 text-[11px] outline-none">
+                                <button id="btn-anim-ai-run" onclick="AnimAI.genFromPrompt()"
+                                    class="px-2 py-1 rounded bg-purple-600 text-white text-[11px] font-semibold">✨ Sinh clip</button>
+                            </div>
+
+                            <div class="border-b pb-2">
+                                <h4 class="font-semibold text-[11px] mb-1 text-slate-700">2. Bộ clip đầy đủ</h4>
+                                <div class="flex gap-1">
+                                    <input id="anim-ai-style" value="cartoon action" class="w-28 rounded border px-1 py-0.5 text-[10px]">
+                                    <button onclick="AnimAI.genFullSet()" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 text-[11px]">Sinh 7 clip</button>
+                                </div>
+                            </div>
+
+                            <div class="border-b pb-2">
+                                <h4 class="font-semibold text-[11px] mb-1 text-slate-700">3–4. Trau chuốt & nhịp</h4>
+                                <div class="flex flex-wrap gap-1">
+                                    <button onclick="AnimAI.proPass()" class="px-2 py-1 rounded bg-purple-100 text-purple-700 text-[11px]">AI pro pass</button>
+                                    <button onclick="AnimAI.annotateClip()" class="px-2 py-1 rounded bg-sky-100 text-sky-700 text-[11px]">Chú thích nhịp</button>
+                                </div>
+                            </div>
+
+                            <div class="border-b pb-2">
+                                <h4 class="font-semibold text-[11px] mb-1 text-slate-700">5. Lip-sync theo thoại</h4>
+                                <div class="flex gap-1">
+                                    <input id="anim-ai-line" placeholder="câu thoại..." class="flex-1 rounded border px-1 py-0.5 text-[10px]">
+                                    <button onclick="AnimAI.lipSync()" class="px-2 py-1 rounded bg-emerald-100 text-emerald-700 text-[11px]">Lip-sync</button>
+                                </div>
+                            </div>
+
+                            <div class="border-b pb-2">
+                                <h4 class="font-semibold text-[11px] mb-1 text-slate-700">6–8. In-between · Biến thể · Chấm điểm</h4>
+                                <div class="flex flex-wrap gap-1">
+                                    <button onclick="AnimAI.interpolateBetween()" class="px-2 py-1 rounded bg-cyan-100 text-cyan-700 text-[11px]">AI in-between</button>
+                                    <button onclick="AnimAI.makeVariant('fast')" class="px-2 py-1 rounded bg-slate-200 text-[11px]">fast</button>
+                                    <button onclick="AnimAI.makeVariant('slow')" class="px-2 py-1 rounded bg-slate-200 text-[11px]">slow</button>
+                                    <button onclick="AnimAI.makeVariant('strong')" class="px-2 py-1 rounded bg-slate-200 text-[11px]">strong</button>
+                                    <button onclick="AnimAI.makeVariant('soft')" class="px-2 py-1 rounded bg-slate-200 text-[11px]">soft</button>
+                                    <button onclick="AnimAI.analyzeClip(false)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-[11px]">Chấm điểm</button>
+                                    <button onclick="AnimAI.analyzeClip(true)" class="px-2 py-1 rounded bg-amber-200 text-amber-800 text-[11px]">Tự sửa</button>
+                                </div>
+                            </div>
+
+                            <div class="border-b pb-2">
+                                <h4 class="font-semibold text-[11px] mb-1 text-slate-700">9. AI đạo diễn (state machine)</h4>
+                                <div class="flex flex-wrap gap-1">
+                                    <button onclick="AnimAI.genTransitions()" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 text-[11px]">Sinh chuyển cảnh</button>
+                                    <button onclick="AnimAI.playStateMachine(1.2)" class="px-2 py-1 rounded bg-indigo-200 text-indigo-800 text-[11px]">Chạy thử</button>
+                                </div>
+                            </div>
+
+                            <div class="border-b pb-2">
+                                <h4 class="font-semibold text-[11px] mb-1 text-slate-700">10. Blend 2 clip</h4>
+                                <div class="flex flex-wrap items-center gap-1">
+                                    <select id="anim-ai-blend-a" class="rounded border px-1 py-0.5 text-[10px] max-w-[110px]"></select>
+                                    <select id="anim-ai-blend-b" class="rounded border px-1 py-0.5 text-[10px] max-w-[110px]"></select>
+                                    <input id="anim-ai-blend-w" type="number" value="0.5" step="0.1" min="0" max="1" class="w-12 rounded border px-1 py-0.5 text-[10px]">
+                                    <button onclick="AnimAI.blendClips(document.getElementById('anim-ai-blend-a').value, document.getElementById('anim-ai-blend-b').value, document.getElementById('anim-ai-blend-w').value)" class="px-2 py-1 rounded bg-teal-100 text-teal-700 text-[11px]">Blend</button>
+                                </div>
+                            </div>
+
+                            <div class="border-b pb-2">
+                                <h4 class="font-semibold text-[11px] mb-1 text-slate-700">11–12. Thư viện · Time-remap</h4>
+                                <div class="flex flex-wrap gap-1">
+                                    <button onclick="AnimAI.exportLibrary()" class="px-2 py-1 rounded bg-slate-200 text-[11px]">Export JSON</button>
+                                    <button onclick="AnimAI.importLibrary()" class="px-2 py-1 rounded bg-slate-200 text-[11px]">Import JSON</button>
+                                    <input id="anim-ai-file" type="file" accept="application/json" class="hidden" onchange="AnimAI.onImportFile(this.files[0])">
+                                    <button onclick="AnimAI.timeRemap(2, 0, Engine.animation.currentClip ? Engine.animation.currentClip.duration : 1)" class="px-2 py-1 rounded bg-slate-200 text-[11px]">time 2x</button>
+                                    <button onclick="AnimAI.timeRemap(0.5, 0, Engine.animation.currentClip ? Engine.animation.currentClip.duration : 1)" class="px-2 py-1 rounded bg-slate-200 text-[11px]">time 0.5x</button>
+                                </div>
+                            </div>
+
+                            <div class="border-b pb-2">
+                                <h4 class="font-semibold text-[11px] mb-1 text-slate-700">13–15. Biểu cảm · Phụ trợ · Tự cải thiện</h4>
+                                <div class="flex flex-wrap items-center gap-1">
+                                    <input id="anim-ai-expr" value="vui vẻ" class="w-20 rounded border px-1 py-0.5 text-[10px]">
+                                    <button onclick="AnimAI.genExpression()" class="px-2 py-1 rounded bg-pink-100 text-pink-700 text-[11px]">Biểu cảm</button>
+                                    <button onclick="AnimAI.genSecondary()" class="px-2 py-1 rounded bg-pink-100 text-pink-700 text-[11px]">Phụ trợ</button>
+                                    <button onclick="AnimAI.selfImprove(2)" class="px-2 py-1 rounded bg-purple-600 text-white text-[11px]">Tự cải thiện ×2</button>
+                                </div>
+                            </div>
+                            <div id="anim-ai-info" class="text-[10px] text-slate-500 font-mono">—</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="h-[46px] shrink-0 border-t border-slate-200 bg-white flex items-center gap-2 px-3 text-[11px]">
+            <span class="font-semibold text-slate-600" id="transform-bone-name">—</span>
+            <label class="flex items-center gap-1 text-slate-500">X <input id="inp-x" type="number"
+                    class="w-14 rounded border border-slate-200 px-1 py-0.5"></label>
+            <label class="flex items-center gap-1 text-slate-500">Y <input id="inp-y" type="number"
+                    class="w-14 rounded border border-slate-200 px-1 py-0.5"></label>
+            <label class="flex items-center gap-1 text-slate-500">R <input id="inp-rot" type="number"
+                    class="w-14 rounded border border-slate-200 px-1 py-0.5"></label>
+            <select id="select-bone-part"
+                class="flex-1 min-w-0 rounded border border-slate-200 px-1 py-0.5 text-[10px]"></select>
+        </div>
+    </section>
+
+    <!-- API key modal -->
+    <div id="api-modal" class="fixed inset-0 bg-black/40 items-center justify-center z-[70]" style="display:none">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between">
+                <h3 class="font-semibold text-sm">Cài đặt API Keys cho các Model AI</h3>
+                <button onclick="closeKeyModal()" class="text-slate-400 hover:text-slate-700"><i
+                        class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <!-- OpenAI (ChatGPT) -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>🤖</span> OpenAI (ChatGPT)</h4>
+                <input type="password" id="input-openai-key" placeholder="sk-proj-..."
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+            </div>
+
+            <!-- DeepSeek -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>🔮</span> DeepSeek</h4>
+                <input type="password" id="input-deepseek-key" placeholder="sk-... (platform.deepseek.com)"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+                <input type="text" id="input-deepseek-base" placeholder="https://api.deepseek.com/v1/chat/completions"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-[11px] font-mono outline-none focus:border-black">
+                <p class="text-[10px] text-slate-400">Base URL tuỳ chọn — để trống dùng mặc định. Muốn hỏi về rig + animation pro thì chọn 🔮 DeepSeek ở danh sách model.</p>
+            </div>
+
+            <!-- Google Gemini -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>⭐</span> Google Gemini</h4>
+                <input type="password" id="input-gemini-key" placeholder="AIzaSy..."
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+            </div>
+
+            <!-- OpenRouter -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>🚀</span> OpenRouter</h4>
+                <input type="password" id="input-openrouter-key" placeholder="sk-or-v1-... (openrouter.ai/keys)"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+                <input type="text" id="input-openrouter-base" placeholder="https://openrouter.ai/api/v1"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-[11px] font-mono outline-none focus:border-black">
+                <p class="text-[10px] text-slate-400">Dùng 1 key cho nhiều model (GPT-4o, Claude, Gemini, DeepSeek…). Cần có ít nhất $1 trong tài khoản để gọi được model trả phí.</p>
+            </div>
+
+            <!-- xKiro -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>🌐</span> xKiro</h4>
+                <input type="password" id="input-xkiro-key" placeholder="key từ xkiro.com"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+                <p class="text-[10px] text-slate-400">Text + image (api.xkiro.com/v1). Đặt XKIRO_API_KEY trong .env để dùng qua server.</p>
+            </div>
+
+            <!-- APInex -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>🎨</span> APInex</h4>
+                <input type="password" id="input-apinex-key" placeholder="key từ apinex.bond"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+                <p class="text-[10px] text-slate-400">Text + image (api.apinex.bond/v1). Đặt APINEX_API_KEY trong .env.</p>
+            </div>
+
+            <!-- AgentRouter -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>🛰️</span> AgentRouter</h4>
+                <input type="password" id="input-agentrouter-key" placeholder="sk-... (agentrouter.org)"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+                <input type="text" id="input-agentrouter-base" placeholder="https://agentrouter.org/v1"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-[11px] font-mono outline-none focus:border-black">
+                <p class="text-[10px] text-slate-400">Một key dùng cho gpt-5.6-sol · gpt-6-astra · gpt-6.1-sol. Để trống base URL nếu dùng mặc định. Khi chạy qua dev_server.js, key có thể nằm trong file .env (AGENTROUTER_API_KEY).</p>
+            </div>
+
+            <!-- Moonshot Kimi -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>🌙</span> Moonshot AI (Kimi)</h4>
+                <input type="password" id="input-kimi-key" placeholder="sk-... (platform.moonshot.cn)"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+                <input type="text" id="input-kimi-base" placeholder="https://api.moonshot.cn/v1/chat/completions"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-[11px] font-mono outline-none focus:border-black">
+                <p class="text-[10px] text-slate-400">Hỗ trợ model Kimi-K2-0905, Kimi-Latest. Base URL tuỳ chọn — để trống dùng mặc định.</p>
+            </div>
+
+            <!-- Zhipu GLM -->
+            <div class="border rounded-lg p-3 space-y-2">
+                <h4 class="text-xs font-semibold flex items-center gap-2"><span>🧠</span> Zhipu GLM</h4>
+                <input type="password" id="input-glm-key" placeholder="..."
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:border-black">
+            </div>
+
+            <p class="text-[10px] text-slate-400">Tất cả keys được lưu trong localStorage của trình duyệt này, không gửi đi đâu ngoài API của các provider tương ứng.</p>
+            <div class="flex justify-between items-center pt-1">
+                <button onclick="clearAllKeys()" class="text-red-500 text-xs">Xoá tất cả keys</button>
+                <button onclick="saveAllKeys()"
+                    class="rounded-lg bg-black text-white px-4 py-1.5 text-xs font-semibold">Lưu tất cả</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================== IMAGE VIEWER (mở rộng ảnh trong chat) ===================== -->
+    <div id="img-viewer" role="dialog" aria-modal="true" aria-label="Xem ảnh">
+        <div id="img-viewer-bar">
+            <span class="v-title" id="img-viewer-title">ảnh</span>
+            <span id="img-viewer-meta" style="opacity:.7"></span>
+            <span class="v-spacer"></span>
+            <button onclick="ImageViewer.fit()" title="Vừa khung (F)"><i class="fa-solid fa-expand"></i> Vừa khung</button>
+            <button onclick="ImageViewer.actual()" title="Kích thước thật (1)">1:1</button>
+            <button onclick="ImageViewer.step(-1)" title="Thu nhỏ (-)"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
+            <button onclick="ImageViewer.step(1)" title="Phóng to (+)"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
+            <span id="img-viewer-zoom" style="font-family:monospace;min-width:44px;text-align:center">100%</span>
+            <button onclick="ImageViewer.download()" title="Tải ảnh"><i class="fa-solid fa-download"></i> Tải</button>
+            <button onclick="ImageViewer.useAsCharacter()" id="img-viewer-use" class="on" title="Dùng ảnh này làm nhân vật"><i class="fa-solid fa-user-astronaut"></i> Làm nhân vật</button>
+            <button onclick="ImageViewer.rigSvg()" id="img-viewer-rig" class="on" title="Rig ngay (ảnh SVG có part tách rời)"><i class="fa-solid fa-bone"></i> Rig SVG</button>
+            <button onclick="ImageViewer.close()" title="Đóng (Esc)"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div id="img-viewer-stage">
+            <img id="img-viewer-img" alt="ảnh mở rộng" draggable="false">
+            <div id="img-viewer-hint">lăn chuột để zoom · kéo để di chuyển · Esc đóng</div>
+        </div>
+    </div>
+
+    <div id="toast-message"
+        class="fixed bottom-5 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs px-3 py-2 rounded-lg shadow-xl hidden z-[80]">
+        <span id="toast-text">OK</span>
+    </div>
+
+    <!-- CDN Tailwind (JIT) có thể chặn/treo ở một số mạng nên engine đã nạp bằng defer ở <head>. -->
+</body>
+
+</html>

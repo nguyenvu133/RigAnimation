@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300" stroke="#263238" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+<g id="head"><path d="M68 74V46a32 32 0 0 1 64 0v28Z" fill="#b0bec5"/><path d="M68 51h64v18H68Z" fill="#78909c"/><path d="M80 59h15m10 0h15" fill="none"/><path d="M93 15 100 3l7 12" fill="#d84343"/></g>
+<g id="torso"><path d="M63 78Q100 68 137 78l8 76H55Z" fill="#90a4ae"/><path d="M87 94h26v42l-13 10-13-10Z" fill="#c62828"/><path d="m100 102 4 9 10 1-7 7 2 10-9-5-9 5 2-10-7-7 10-1Z" fill="#ffd54f"/></g>
+<g id="hips"><rect x="57" y="149" width="86" height="22" rx="5" fill="#607d8b"/><path d="M63 170h74l-7 22H70Z" fill="#90a4ae"/></g>
+<g id="arm_upper_L"><path d="M63 84Q40 87 31 116l16 7 22-22Z" fill="#90a4ae"/></g>
+<g id="arm_lower_L"><path d="m32 112 17 7-11 29-17-5Z" fill="#b0bec5"/></g>
+<g id="hand_L"><circle cx="28" cy="148" r="9" fill="#78909c"/></g>
+<g id="arm_upper_R"><path d="M137 84q23 3 32 32l-16 7-22-22Z" fill="#90a4ae"/></g>
+<g id="arm_lower_R"><path d="m168 112-17 7 9 27 17-6Z" fill="#b0bec5"/></g>
+<g id="hand_R"><circle cx="170" cy="145" r="9" fill="#78909c"/></g>
+<g id="leg_upper_L"><path d="M65 188h33l-4 46H60Z" fill="#90a4ae"/></g>
+<g id="leg_lower_L"><path d="M61 230h31l-4 45H57Z" fill="#b0bec5"/></g>
+<g id="foot_L"><path d="M58 269h29l8 14H48q-3-9 10-14Z" fill="#455a64"/></g>
+<g id="leg_upper_R"><path d="M102 188h33l5 46h-34Z" fill="#90a4ae"/></g>
+<g id="leg_lower_R"><path d="M108 230h31l4 45h-31Z" fill="#b0bec5"/></g>
+<g id="foot_R"><path d="M113 269h29q13 5 10 14h-47Z" fill="#455a64"/></g>
+<g id="sword"><path d="m166 29 6 13-2 95h-8l-2-95Z" fill="#eceff1"/><path d="M151 137h30" fill="none" stroke="#ffc107" stroke-width="7"/><rect x="162" y="138" width="8" height="20" rx="3" fill="#795548"/><circle cx="166" cy="161" r="5" fill="#ffc107"/></g>
+</svg>

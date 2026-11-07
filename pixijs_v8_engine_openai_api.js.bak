@@ -1,0 +1,3321 @@
+﻿/* =====================================================================
+   PIXIJS V8 ENGINE PRO — ChatGPT Rig Studio (Spine-style skeleton)
+   ---------------------------------------------------------------------
+   Phụ thuộc (nạp trước trong HTML):
+     - PIXI (pixi.js v8)
+     - spine_rig.js  -> SpineBone / SpineSkeleton / solveTwoBoneIK
+     - assets_import.js -> AssetLibrary (import PNG/JPG/GIF/video)
+   Kiến trúc:
+     PartAtlas  : cắt bộ phận từ sprite sheet (auto-trim)
+     AutoNamer  : tự đặt tên bộ phận
+     SpineRig   : dựng skeleton kiểu Spine từ atlas
+     Engine     : Pixi app + ticker + animation
+     Chat       : ChatGPT (API key thật hoặc mock)
+   ===================================================================== */
+
+/* ---------------------------------------------------------------------
+   1. ATLAS — sprite sheet các bộ phận nhân vật
+   --------------------------------------------------------------------- */
+const ATLAS_SOURCES = {
+    // bản đã tách nền trong suốt — cắt thẳng bằng Rect, không auto-trim
+    sheet: { url: 'assets/images/Cartoon RPG Character Rig Sprite Sheet-Photoroom.png', tight: true },
+    // bản gốc (nền trắng) — auto-trim theo kênh alpha
+    raw: { url: 'assets/images/Cartoon RPG Character Rig Sprite Sheet.png' },
+    // nhân vật cũ (giữ để so sánh / chuyển đổi)
+    pose: { url: 'assets/images/anhtamquoc1.png' }
+};
+
+/* cell = vùng ảnh của bộ phận trên atlas (đo tự động bằng bbox alpha)
+   slot = tên bộ phận chuẩn · wave = 1 khi part phía sau thân (vẽ dưới thân)
+   Atas: Cartoon RPG Character Rig Sprite Sheet-Photoroom.png — 1672×941       */
+/* Cell đo TRỰC TIẾP từ pixel atlas 1672×941 (flood-fill alpha, bỏ nhãn chữ).
+   Mỗi cell là khung ảnh thật của bộ phận — không lấn sang ô/nhãn bên cạnh. */
+const ATLAS_PARTS = {
+    // --- HEAD & FACE ---
+    head:      { sheet: 'sheet', cell: { x: 311, y: 89,  w: 128, h: 123 }, slot: 'head',  vi: 'Đầu' },
+    head_core: { sheet: 'sheet', cell: { x: 353, y: 586, w: 94,  h: 83  }, slot: 'head',  vi: 'Đầu (tóc)' },
+    eyes:      { sheet: 'sheet', cell: { x: 481, y: 303, w: 44,  h: 40  }, slot: 'face',  vi: 'Mắt' },
+    mouth:     { sheet: 'sheet', cell: { x: 583, y: 591, w: 28,  h: 30  }, slot: 'mouth', vi: 'Miệng' },
+    brow:      { sheet: 'sheet', cell: { x: 627, y: 591, w: 26,  h: 30  }, slot: 'face',  vi: 'Lông mày' },
+    // --- HAIR ---
+    hair_back: { sheet: 'sheet', cell: { x: 349, y: 713, w: 87,  h: 73  }, slot: 'hair', vi: 'Tóc sau', wave: 1 },
+    hair_top:  { sheet: 'sheet', cell: { x: 349, y: 713, w: 87,  h: 73  }, slot: 'hair', vi: 'Tóc mái' },
+    back_hair: { sheet: 'sheet', cell: { x: 491, y: 692, w: 83,  h: 85  }, slot: 'hair', vi: 'Tóc dài', wave: 1 },
+    // --- TORSO ---
+    torso:     { sheet: 'sheet', cell: { x: 758, y: 91,  w: 113, h: 115 }, slot: 'torso', vi: 'Thân trên' },
+    torso_lo:  { sheet: 'sheet', cell: { x: 760, y: 254, w: 114, h: 78  }, slot: 'torso', vi: 'Bụng' },
+    hip:       { sheet: 'sheet', cell: { x: 763, y: 393, w: 106, h: 92  }, slot: 'hips',  vi: 'Hông' },
+    body_core: { sheet: 'sheet', cell: { x: 762, y: 556, w: 108, h: 107 }, slot: 'torso', vi: 'Lõi cơ thể' },
+    skin_lo:   { sheet: 'sheet', cell: { x: 763, y: 710, w: 106, h: 39  }, slot: 'hips',  vi: 'Bóng da' },
+    // --- ARMS ---
+    arm_up_L:  { sheet: 'sheet', cell: { x: 974, y: 95,  w: 97,  h: 58  }, slot: 'arm_up',  vi: 'Bắp tay trái' },
+    arm_low_L: { sheet: 'sheet', cell: { x: 981, y: 205, w: 94,  h: 48  }, slot: 'arm_low', vi: 'Cẳng tay trái' },
+    fist_L:    { sheet: 'sheet', cell: { x: 999, y: 302, w: 53,  h: 48  }, slot: 'hand',   vi: 'Nắm đấm trái' },
+    hand_L:    { sheet: 'sheet', cell: { x: 984, y: 394, w: 75,  h: 68  }, slot: 'hand',   vi: 'Bàn tay trái' },
+    arm_up_R:  { sheet: 'sheet', cell: { x: 1142, y: 97,  w: 94,  h: 57  }, slot: 'arm_up',  vi: 'Bắp tay phải' },
+    arm_low_R: { sheet: 'sheet', cell: { x: 1143, y: 204, w: 93,  h: 49  }, slot: 'arm_low', vi: 'Cẳng tay phải' },
+    fist_R:    { sheet: 'sheet', cell: { x: 1168, y: 302, w: 52,  h: 48  }, slot: 'hand',   vi: 'Nắm đấm phải' },
+    hand_R:    { sheet: 'sheet', cell: { x: 1156, y: 394, w: 75,  h: 68  }, slot: 'hand',   vi: 'Bàn tay phải' },
+    // --- LEGS ---
+    leg_up_L:  { sheet: 'sheet', cell: { x: 974, y: 508, w: 87,  h: 63 }, slot: 'leg_up',  vi: 'Đùi trái' },
+    leg_low_L: { sheet: 'sheet', cell: { x: 989, y: 612, w: 51,  h: 68 }, slot: 'leg_low', vi: 'Cẳng chân trái' },
+    foot_L:    { sheet: 'sheet', cell: { x: 957, y: 710, w: 83,  h: 69 }, slot: 'foot',    vi: 'Bàn chân trái' },
+    leg_up_R:  { sheet: 'sheet', cell: { x: 1152, y: 508, w: 88, h: 63 }, slot: 'leg_up',  vi: 'Đùi phải' },
+    leg_low_R: { sheet: 'sheet', cell: { x: 1166, y: 612, w: 51, h: 68 }, slot: 'leg_low', vi: 'Cẳng chân phải' },
+    foot_R:    { sheet: 'sheet', cell: { x: 1162, y: 710, w: 83, h: 70 }, slot: 'foot',    vi: 'Bàn chân phải' },
+    // --- WEAPONS ---
+    sword:        { sheet: 'sheet', cell: { x: 1372, y: 116, w: 246, h: 59  }, slot: 'weapon', vi: 'Kiếm 01' },
+    sword_blue:   { sheet: 'sheet', cell: { x: 1361, y: 252, w: 255, h: 77  }, slot: 'weapon', vi: 'Kiếm 02' },
+    shield_round: { sheet: 'sheet', cell: { x: 1414, y: 392, w: 127, h: 127 }, slot: 'weapon', vi: 'Khiên tròn' },
+    shield_crest: { sheet: 'sheet', cell: { x: 1412, y: 575, w: 122, h: 164 }, slot: 'weapon', vi: 'Khiên gia huy' }
+};
+
+/* bộ phận nhân vật cũ — chỉ dùng khi chuyển character về Quan Vũ */
+const LEGACY_PARTS = {
+    head_core:  { sheet: 'pose', cell: { x: 450, y: 22,  w: 130, h: 145 }, slot: 'head',   vi: 'Đầu' },
+    eyes:       { sheet: 'pose', cell: { x: 465, y: 200, w: 100, h: 45 },  slot: 'face',   vi: 'Mắt' },
+    beard:      { sheet: 'pose', cell: { x: 458, y: 250, w: 118, h: 42 },  slot: 'face',   vi: 'Râu' },
+    collar:     { sheet: 'pose', cell: { x: 462, y: 298, w: 106, h: 38 },  slot: 'collar', vi: 'Cổ áo' },
+    hair_front: { sheet: 'pose', cell: { x: 450, y: 372, w: 130, h: 62 },  slot: 'hair',   vi: 'Tóc trước' },
+    hair_back:  { sheet: 'pose', cell: { x: 450, y: 470, w: 130, h: 66 },  slot: 'hair',   vi: 'Tóc sau' },
+    crown:      { sheet: 'pose', cell: { x: 455, y: 545, w: 118, h: 62 },  slot: 'crown',  vi: 'Mũ' },
+    crown_base: { sheet: 'pose', cell: { x: 450, y: 618, w: 128, h: 84 },  slot: 'crown',  vi: 'Vành mũ' },
+    torso:      { sheet: 'pose', cell: { x: 672, y: 22,  w: 150, h: 122 }, slot: 'torso',  vi: 'Thân' },
+    loincloth:  { sheet: 'pose', cell: { x: 658, y: 192, w: 178, h: 152 }, slot: 'skirt',  vi: 'Vạt áo' },
+    belt:       { sheet: 'pose', cell: { x: 652, y: 348, w: 186, h: 58 },  slot: 'belt',   vi: 'Đai lưng' },
+    cape:       { sheet: 'pose', cell: { x: 618, y: 486, w: 182, h: 240 }, slot: 'cape',   vi: 'Áo choàng' },
+    arm_L:      { sheet: 'pose', cell: { x: 868, y: 22,  w: 92,  h: 200 }, slot: 'arm',      vi: 'Tay trái' },
+    arm_R:      { sheet: 'pose', cell: { x: 958, y: 22,  w: 92,  h: 200 }, slot: 'arm',      vi: 'Tay phải' },
+    pauldron_L: { sheet: 'pose', cell: { x: 1058, y: 22, w: 100, h: 118 }, slot: 'pauldron', vi: 'Giáp vai trái' },
+    pauldron_R: { sheet: 'pose', cell: { x: 1152, y: 22, w: 100, h: 118 }, slot: 'pauldron', vi: 'Giáp vai phải' },
+    leg_L:      { sheet: 'pose', cell: { x: 910, y: 486, w: 92,  h: 200 }, slot: 'leg', vi: 'Chân trái' },
+    leg_R:      { sheet: 'pose', cell: { x: 1000, y: 486, w: 92,  h: 200 }, slot: 'leg', vi: 'Chân phải' },
+    weapon_blade: { sheet: 'pose', cell: { x: 1180, y: 22,  w: 76, h: 258 }, slot: 'weapon', vi: 'Lưỡi đao' },
+    weapon_hilt:  { sheet: 'pose', cell: { x: 1180, y: 302, w: 76, h: 122 }, slot: 'weapon', vi: 'Chuôi đao' }
+};
+
+let USING_LEGACY = false;
+
+const PartAtlas = {
+    images: {}, textures: {}, loaded: false, _trim: {},
+
+    async load() {
+        const loadImg = url => new Promise(res => {
+            const i = new Image();
+            i.onload = () => res(i);
+            i.onerror = () => res(null);
+            i.src = url;
+        });
+        for (const [k, src] of Object.entries(ATLAS_SOURCES)) {
+            const img = await Promise.race([loadImg(src.url), new Promise(r => setTimeout(() => r(null), 20000))]);
+            if (img) { this.images[k] = img; this.textures[k] = PIXI.Texture.from(img); }
+        }
+        this.loaded = Object.keys(this.images).length > 0;
+        return this.loaded;
+    },
+
+    list() { return Object.keys(ATLAS_PARTS); },
+
+    /** auto-trim: tách "đảo" pixel lớn nhất (part thật) để bỏ chữ tiêu đề ô */
+    /** auto-trim: bỏ dải chữ tiêu đề (trên/dưới) rồi lấy bbox pixel đặc */
+    trim(key) {
+        if (this._trim[key]) return this._trim[key];
+        const def = ATLAS_PARTS[key];
+        const img = this.images[def.sheet];
+        if (!img) return null;
+        // atlas đã tách nền: Rect đo sẵn chính là khung ảnh, không trim nữa
+        if ((ATLAS_SOURCES[def.sheet] || {}).tight) {
+            const b = { ...def.cell };
+            this._trim[key] = b;
+            return b;
+        }
+
+        const PAD = 10;
+        const c = def.cell;
+        const x0 = Math.max(0, Math.round(c.x) - PAD);
+        const y0 = Math.max(0, Math.round(c.y) - PAD);
+        const w = Math.min(img.naturalWidth - x0, Math.round(c.w) + PAD * 2);
+        const h = Math.min(img.naturalHeight - y0, Math.round(c.h) + PAD * 2);
+
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, x0, y0, w, h, 0, 0, w, h);
+        const d = ctx.getImageData(0, 0, w, h).data;
+
+        // mật độ pixel đặc theo từng hàng
+        const rowN = new Array(h).fill(0);
+        for (let y = 0; y < h; y++) {
+            let n = 0;
+            for (let x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 60) n++;
+            rowN[y] = n;
+        }
+
+        /* Chữ tiêu đề: hàng mảnh, mật độ thấp, thường chiếm < 25% bề ngang.
+           Tìm dải hàng có nội dung chính: điểm bắt đầu/kt từ hàng đầu/cuối
+           có mật độ >= 25% và không quay lại vùng thưa sau đó. */
+        const thin = Math.max(3, w * 0.25);
+        let top = 0, bottom = h - 1;
+        while (top < h - 4 && rowN[top] < thin) top++;
+        while (bottom > top + 4 && rowN[bottom] < thin) bottom--;
+
+        // nếu vẫn còn dải chữ dính ở đầu (hàng thưa xen kẽ), cắt tiếp
+        const gapLimit = 6;
+        let y = top;
+        while (y < bottom) {
+            if (rowN[y] >= thin) break;
+            let g = 0;
+            while (y < bottom && rowN[y] < thin) { y++; g++; }
+            if (g > gapLimit) { top = y; break; }
+        }
+
+        // bbox trong dải
+        let minX = w, maxX = -1, minY = h, maxY = -1;
+        for (let yy = top; yy <= bottom; yy++) {
+            if (rowN[yy] === 0) continue;
+            for (let x = 0; x < w; x++) {
+                if (d[(yy * w + x) * 4 + 3] > 60) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (yy < minY) minY = yy;
+                    if (yy > maxY) maxY = yy;
+                }
+            }
+        }
+
+        let box;
+        if (maxX < 0) box = { x: x0, y: y0, w, h };
+        else box = { x: x0 + minX, y: y0 + minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+
+        this._trim[key] = box;
+        return box;
+    },
+
+    textureFor(key) {
+        // tìm trong ATLAS_PARTS trước, nếu không có tìm trong LEGACY_PARTS
+        let def = ATLAS_PARTS[key];
+        if (!def) def = LEGACY_PARTS[key];
+        const base = def && this.textures[def.sheet];
+        if (!base) {
+            console.warn(`❌ Không tìm thấy texture cho part: ${key}, sheet: ${def?.sheet}`);
+            return null;
+        }
+        // nếu là LEGACY_PARTS, không trim mà dùng cell trực tiếp
+        const b = LEGACY_PARTS[key] ? def.cell : (this.trim(key) || def.cell);
+        const t = new PIXI.Texture({
+            source: base.source,
+            frame: new PIXI.Rectangle(b.x, b.y, b.w, b.h)
+        });
+        t.label = key;
+        console.log(`✅ Tạo texture thành công cho part: ${key}, frame: ${b.x},${b.y},${b.w},${b.h}`);
+        return t;
+    }
+};
+
+/* ---------------------------------------------------------------------
+   2. AUTO NAMER
+   --------------------------------------------------------------------- */
+const AutoNamer = {
+    SLOT_VI: {
+        head: 'Đầu', face: 'Mặt', mouth: 'Miệng', hair: 'Tóc', crown: 'Mũ miện', collar: 'Cổ áo',
+        torso: 'Thân', hips: 'Hông', skirt: 'Vạt áo', belt: 'Đai lưng', cape: 'Áo choàng',
+        arm_up: 'Bắp tay', arm_low: 'Cẳng tay', hand: 'Bàn tay',
+        arm: 'Tay', pauldron: 'Giáp vai', leg_up: 'Đùi', leg_low: 'Cẳng chân', foot: 'Bàn chân',
+        leg: 'Chân', weapon: 'Vũ khí'
+    },
+
+    /** đặt tên cho 1 part: dựa trên slot + hướng trái/phải */
+    nameOf(key) {
+        const d = ATLAS_PARTS[key];
+        if (!d) return null;
+        let side = '';
+        if (/(^|_)L$/.test(key) || /trái/.test(d.vi || '')) side = ' (trái)';
+        else if (/(^|_)R$/.test(key) || /phải/.test(d.vi || '')) side = ' (phải)';
+        const base = this.SLOT_VI[d.slot] || 'Bộ phận';
+        return { tech: d.slot + (side ? (side.includes('trái') ? '_L' : '_R') : ''), vi: base + side };
+    },
+
+    /** quét toàn bộ atlas, trả về bảng tên */
+    applyToAll() {
+        const out = [];
+        Object.keys(ATLAS_PARTS).forEach(key => {
+            const n = this.nameOf(key);
+            const box = PartAtlas.trim(key);
+            // bone nào đang gắn part này thì lấy luôn tên bộ phận
+            const bone = SpineRig.TEMPLATE.find(t => t.part === key);
+            ATLAS_PARTS[key].autoName = bone ? bone.name : n.tech;
+            ATLAS_PARTS[key].autoNameVi = n.vi;
+            out.push({
+                key,
+                name: bone ? bone.name : n.tech,
+                vi: n.vi,
+                slot: ATLAS_PARTS[key].slot,
+                size: box ? `${box.w}×${box.h}` : '—'
+            });
+        });
+        return out;
+    }
+};
+
+/* ---------------------------------------------------------------------
+   3. SPINE AUTO RIG
+   --------------------------------------------------------------------- */
+/* Điểm neo cho từng bone: ax/ay = anchor trong part, ox/oy = offset so với gốc bone.
+   Gốc bone nằm ở khớp; part được treo/lệch theo giải phẫu.
+   Quy ước: ay = 0 → đỉnh part, ay = 1 → đáy part. */
+/* Mỗi part là 1 PIXI.Sprite con của container bone → chỉ cần bản chất anchor,
+   không có offset thế giới. ox/oy giữ lại cho tinh chỉnh micro. */
+/* Toạ độ gốc part trong khung ảnh atlas (chân part nằm ở đâu trong texture)
+   → sprite được pivot ở đó để xoay quanh đúng khớp khi bone xoay. */
+/* Pivot giờ nằm trong TEMPLATE mỗi bone (theo % ảnh) để AI rig cũng mang theo được. */
+
+const ATTACH_ANCHOR = {
+    // thân: neo cạnh trên part vào gốc bone, part chạy xuống
+    torso:      { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    torso_lo:   { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    body_core:  { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    hip:        { ax: 0.5, ay: 0.10, ox: 0, oy: 0 },
+    skin_lo:    { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    // đầu: đáy part (cổ) gắn vào gốc bone head
+    head:       { ax: 0.5, ay: 1.00, ox: 0, oy: 0 },
+    eyes:       { ax: 0.5, ay: 0.50, ox: 0, oy: 0 },
+    mouth:      { ax: 0.5, ay: 0.50, ox: 0, oy: 0 },
+    hair_b:     { ax: 0.5, ay: 1.00, ox: 0, oy: 0 },
+    hair_top:   { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    brow:       { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    side_hair:  { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    back_hair:  { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    // tay: đỉnh part cắm vào khớp
+    arm_up:     { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    arm_low:    { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    hand:       { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    // chân
+    leg_up:     { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    leg_low:    { ax: 0.5, ay: 0.00, ox: 0, oy: 0 },
+    foot:       { ax: 0.5, ay: 0.20, ox: 0, oy: 0 },
+    // vũ khí: chuôi nằm ở 1/3 trái part
+    weapon:     { ax: 0.22, ay: 0.50, ox: 0, oy: 0 },
+    head_core:  { ax: 0.5, ay: 1.00, ox: 0, oy: 0 },
+    sword:      { ax: 0.22, ay: 0.50, ox: 0, oy: 0 },
+    sword_blue: { ax: 0.22, ay: 0.50, ox: 0, oy: 0 },
+    shield_round: { ax: 0.5, ay: 0.5, ox: 0, oy: 0 },
+    shield_crest: { ax: 0.5, ay: 0.5, ox: 0, oy: 0 }
+};
+
+const SpineRig = {
+    /* Cây xương chuẩn — toạ độ (px) khớp với kích thước part thật trong atlas.
+       Hệ toạ độ Pixi: y dương hướng xuống. Bone "torso" dài 120 để phần đầu
+       nằm đúng chỗ đỉnh thân. */
+    /* Mỗi bone có: pivot (điểm gắn trên part, % của ảnh) và chỉnh hướng riêng.
+       Toạ độ: y dương = xuống, gốc (0,0) ở hông. Torso mọc NGƯỢC LÊN (rot 180).
+       Head_Base trong atlas là đầu trọc (tóc nằm ở Head_Core/Hair_Back riêng). */
+    TEMPLATE: [
+        { name: 'root',      parent: null,       x: 0,   y: 0,   rot: 0,  len: 20 },
+        /* Pivot đọc từ lưới 10% của ảnh crop:
+           - thân/hông: neo ở CẠNH TRÊN (đỉnh thân) cho xương mọc xuống
+           - đầu: cổ ở đáy giữa (0.5, 0.92)
+           - tay/chân: khớp ở PHÍA TRÊN part (x giữa, y ≈ 0.1–0.25) */
+        { name: 'hips',      parent: 'root',     x: 0,   y: 0,   rot: 0,  len: 30, part: 'hip', pivot: [0.5, 0.10] },
+        // chân: hông → gối → cổ chân → gót (pivot = giữa-trên của part)
+        /* len = chiều cao THẬT của part trong atlas (đo từ texture) để khớp nối liền mạch:
+           đùi 63, cẳng chân 68, bàn chân 69 */
+        { name: 'leg_upper_L', parent: 'hips',   x: -22, y: 6,   rot: 0,  len: 63, part: 'leg_up_L', pivot: [0.5, 0.10] },
+        { name: 'leg_lower_L', parent: 'leg_upper_L', x: 0, y: 63, rot: 0, len: 68, part: 'leg_low_L', pivot: [0.5, 0.08] },
+        { name: 'foot_L',    parent: 'leg_lower_L', x: 0, y: 68, rot: 0, len: 69, part: 'foot_L', pivot: [0.5, 0.12] },
+        { name: 'leg_upper_R', parent: 'hips',   x: 22,  y: 6,   rot: 0,  len: 63, part: 'leg_up_R', pivot: [0.5, 0.10] },
+        { name: 'leg_lower_R', parent: 'leg_upper_R', x: 0, y: 63, rot: 0, len: 68, part: 'leg_low_R', pivot: [0.5, 0.08] },
+        { name: 'foot_R',    parent: 'leg_lower_R', x: 0, y: 68, rot: 0, len: 69, part: 'foot_R', pivot: [0.5, 0.12] },
+        /* THÂN: bone torso mọc NGƯỢC LÊN từ hông → rot 180, và pivot ở ĐÁY part thân
+           để ảnh thân nằm phía trên hông. Nhờ vậy mọi bone con (đầu, tay) tính theo
+           trục "lên" của torso một cách tự nhiên. */
+        { name: 'torso',     parent: 'hips',     x: 0,   y: -105,rot: 0,  len: 105, part: 'torso', pivot: [0.5, 0.02] },
+        { name: 'torso_low', parent: 'torso',    x: 0,   y: 62,  rot: 0,  len: 43, part: 'torso_lo', pivot: [0.5, 0.02] },
+        { name: 'body_core', parent: 'torso',    x: 0,   y: 80,  rot: 0,  len: 25, part: 'body_core', pivot: [0.5, 0.02] },
+        // tóc + đầu: nằm trên đỉnh thân
+        { name: 'hair_b',    parent: 'torso',    x: 0,   y: 4,   rot: 0,  len: 30, part: 'hair_back', wave: 1, pivot: [0.5, 0.02] },
+        { name: 'neck',      parent: 'torso',    x: 0,   y: 0,   rot: 0,  len: 12 },
+        { name: 'head',      parent: 'neck',     x: 0,   y: 0,   rot: 0,  len: 95,  part: 'head', pivot: [0.5, 0.94] },
+        // thuộc tính phụ diễn (không gắn ảnh) — AI có thể key hair_top/side_hair
+        { name: 'hair_top',  parent: 'head',     x: 0,   y: -6,  rot: 0,  len: 24 },
+        { name: 'side_hair', parent: 'head',     x: 0,   y: -40, rot: 0,  len: 16 },
+        { name: 'back_hair', parent: 'head',     x: 0,   y: -30, rot: 0,  len: 16 },
+        /* TAY: gốc bone torso ở ĐỈNH thân (y=-105) nên trục local của torso hướng XUỐNG đã
+           được cộng vào cha. Để tay buông xuống từ vai, dùng y ÂM trong hệ của torso
+           (torso.y = -105, vai nằm ở y ≈ -100 toàn cục → local +5).
+           xoay dương = kim đồng hồ → tay TRÁI xoay ÂM để chĩa ra ngoài. */
+        /* len = chiều cao thật của part: bắp tay 58, cẳng tay 48, bàn tay 68 */
+        /* torso.rot = 0 (part thân mọc xuống như bình thường) → tay cũng y DƯƠNG để mọc xuống.
+           Lỗi trước: torso bị đặt y=-105 khiến mọi con bị đẩy lên trên. */
+        /* Tay gắn vào HIPS (không phải torso) để toạ độ tính theo hông — tránh bị
+           torso ở y=-105 kéo vai lên đỉnh đầu. Vai nằm cao hơn hông ~105px. */
+        { name: 'arm_upper_L', parent: 'hips',   x: -46, y: -105, rot: -8, len: 58, part: 'arm_up_L', pivot: [0.5, 0.15] },
+        { name: 'arm_lower_L', parent: 'arm_upper_L', x: 0, y: 58, rot: 0, len: 48, part: 'arm_low_L', pivot: [0.5, 0.15] },
+        { name: 'hand_L',    parent: 'arm_lower_L', x: 0, y: 48, rot: 0,  len: 68, part: 'hand_L', pivot: [0.5, 0.12] },
+        // (giữ nguyên: y dương = xuống trong hệ của bone cha)
+        { name: 'arm_upper_R', parent: 'hips',   x: 46,  y: -105, rot: 8,  len: 58, part: 'arm_up_R', pivot: [0.5, 0.15] },
+        { name: 'arm_lower_R', parent: 'arm_upper_R', x: 0, y: 58, rot: 0, len: 48, part: 'arm_low_R', pivot: [0.5, 0.15] },
+        { name: 'hand_R',    parent: 'arm_lower_R', x: 0, y: 48, rot: 0,  len: 68, part: 'hand_R', pivot: [0.5, 0.12] },
+        /* VŨ KHÍ: ảnh kiếm nằm NGANG (chuôi bên trái) → xoay 90° để dựng đứng,
+           pivot ở chuôi (0.10, 0.5) để cầm đúng tay. */
+        { name: 'weapon',    parent: 'hand_R',   x: 6,   y: 10,  rot: 0,  len: 60, part: 'sword', pivot: [0.10, 0.5], dir: 90 }
+    ],
+
+    build(scene, usePose = false) {
+        // CHỈ dựng lại 1 lần (trước đây gọi 2 lần → bone/attachment bị nhân đôi)
+        if (scene._rigBuilding) return scene.spine;
+        scene._rigBuilding = true;
+        try { return this._buildRig(scene, usePose); }
+        finally { scene._rigBuilding = false; }
+    },
+
+    _buildRig(scene, usePose) {
+        const defs = this.TEMPLATE.map(d => ({
+            name: d.name,
+            parent: d.parent,
+            x: d.x, y: d.y,
+            rotation: d.rot,
+            length: d.len
+        }));
+        const skel = new SpineSkeleton();
+        skel.build(defs);
+
+        if (scene.rigLayer) scene.rigLayer.destroy({ children: true });
+        scene.rigLayer = new PIXI.Container();
+        scene.rigLayer.label = 'spine_layer';
+        scene.world.addChild(scene.rigLayer);
+        // xếp lớp: part sau lưng (wave) vẽ dưới, part thường vẽ trên
+        const backLayer = new PIXI.Container();
+        const frontLayer = new PIXI.Container();
+        backLayer.label = 'spine_back';
+        frontLayer.label = 'spine_front';
+
+        // gắn attachment theo vị trí giải phẫu (anchor + offset riêng từng part)
+        let count = 0;
+        this.TEMPLATE.forEach(t => {
+            if (!t.part) return;
+            const key = t.part;
+            const tex = PartAtlas.textureFor(key);
+            if (!tex) return;
+            const bone = skel.bones.get(t.name);
+            if (!bone) return;
+            const sp = new PIXI.Sprite(tex);
+            sp.partTag = t.name;
+            sp.anchor.set(0, 0);
+            /* Ảnh part trong atlas đã đúng chiều dọc (đầu ở trên, chân ở dưới) → KHÔNG xoay.
+               Trước đây trừ thêm 90° nên mọi part bị nằm ngang, ráp lại thành hình méo. */
+            const pv = t.pivot || [0.5, 0.1];
+            sp.pivot.set(tex.width * pv[0], tex.height * pv[1]);
+            sp.baseRot = (t.dir || 0) * Math.PI / 180;
+            sp.rotation = sp.baseRot;
+            sp.position.set(0, 0);
+            bone.container.addChild(sp);
+            bone.sprite = sp;
+            bone.partKey = key;
+            sp.partTag = t.name;
+            count++;
+        });
+
+        /* Z-ORDER như giấy cắt:
+           backLayer (tóc sau + tay) → root (chân, hông, thân, đầu...) → frontLayer (bàn tay)
+           Mỗi bone chỉ có MỘT container gắn vào 1 trong 3 nhóm này. */
+        /* FLATTEN: mỗi container là con TRỰC TIẾP của rigLayer (không lồng nhau).
+           syncBoneContainers() ghi toạ độ WORLD của bone vào container, nên nếu để lồng
+           thì transform bị nhân đôi và tay/chân lệch vào giữa thân. */
+        const attach = (boneName, layer) => {
+            const b = skel.bones.get(boneName);
+            if (b && b.container) layer.addChild(b.container);
+            return !!b;
+        };
+        ['hair_b', 'back_hair'].forEach(n => attach(n, backLayer));
+        ['arm_upper_L', 'arm_lower_L', 'arm_upper_R', 'arm_lower_R'].forEach(n => attach(n, backLayer));
+        scene.rigLayer.addChild(backLayer);
+        // mọi bone còn lại (root, hips, torso, đầu, chân...) → con trực tiếp rigLayer
+        const placed = new Set(['hair_b', 'back_hair', 'arm_upper_L', 'arm_lower_L', 'arm_upper_R', 'arm_lower_R', 'hand_L', 'hand_R', 'weapon']);
+        skel.ordered.forEach(b => {
+            if (placed.has(b.name) || !b.container) return;
+            scene.rigLayer.addChild(b.container);
+        });
+        ['hand_L', 'hand_R', 'weapon'].forEach(n => attach(n, frontLayer));
+        scene.rigLayer.addChild(frontLayer);
+        scene.partLayers = { back: backLayer, front: frontLayer };
+
+        scene.spine = skel;
+        // chuẩn hoá rig: xoay thêm theo hướng bone + IK kiểu Spine để pose
+        // reset về vị trí giải phẫu và clip AI thiếu track không làm part trôi
+        this.finalize(skel);
+        scene.spineDebug = new PIXI.Graphics();
+        scene.rigLayer.addChild(scene.spineDebug);
+        scene.spineDebug.visible = document.getElementById('chk-skeleton-toggle')?.checked ?? true;
+
+        skel.setupPose();
+        skel.updateWorldTransform();
+        // đánh dấu sẵn sàng: boot() chỉ vẽ frame đầu khi cờ này = true
+        scene.rigReady = true;
+        this.syncBoneContainers(skel);
+        scene.drawSpineDebug();
+        scene.layoutSpine();
+
+        setText('bone-count', skel.ordered.length);
+        /* DEBUG: đọc bảng toạ độ ngay trong trang bằng localStorage (script scope không truy cập từ ngoài)
+           — bật bằng ?debug=1 */
+        if (/[?&]debug=1/.test(location.search)) {
+            const table = skel.ordered.map(b => `${b.name.padEnd(12)} p=${String(b.parentName).padEnd(10)} q=(${b.qx.toFixed(0)},${b.qy.toFixed(0)}) rot=${b.qrot.toFixed(0)} w=(${b.wx.toFixed(0)},${b.wy.toFixed(0)}) ctr=(${b.container.x.toFixed(0)},${b.container.y.toFixed(0)},${(b.container.rotation * 180 / Math.PI).toFixed(0)}°) spr=${b.partKey || '-'}`);
+            const lb = scene.rigLayer.getLocalBounds();
+            localStorage.setItem('__rigdump', JSON.stringify({ table, lb: [lb.x | 0, lb.y | 0, lb.width | 0, lb.height | 0], scale: scene.world.scale.x, pos: [scene.world.x | 0, scene.world.y | 0] }));
+        }
+        renderSpineBonesList();
+        return skel;
+    },
+
+    /** gắn hướng xoay dài cho từng bone (theo template, mặc định 90 = trùng trục dọc) */
+    finalize(skel) {
+        // finalize() được gọi không gắn receiver → dùng thẳng SpineRig, không dùng this
+        const R = SpineRig;
+        skel.ordered.forEach(b => {
+            const t = R.TEMPLATE.find(d => d.name === b.name) || {};
+            const dir = t.dir !== undefined && t.dir !== null ? t.dir : 90;
+            b.dir = dir - 90;
+        });
+        skel.setupPose = () => skel.ordered.forEach(b => {
+            b.qx = b.x; b.qy = b.y;
+            b.qrot = b.rotation;
+            b.qsx = b.scaleX; b.qsy = b.scaleY;
+        });
+        /* IK chân TẮT mặc định: solveTwoBoneIK ghi đè qrot của đùi/cẳng chân bằng góc
+           world → setup pose bị bẻ gập (nhân vật "ngồi xổm"). Chỉ bật khi cần ghim chân. */
+        skel.ik = [];
+        skel.setupPose();
+        skel.updateWorldTransform();
+        this.syncBoneContainers(skel);
+    },
+
+    /**
+     * Đẩy pose vào PIXI container.
+     * QUAN TRỌNG: container được FLATTEN (tất cả là con trực tiếp của rigLayer) và nhận
+     * transform WORLD từ ma trận skeleton. Trước đây container lồng nhau + toạ độ local
+     * khiến mỗi bone bị cộng dồn transform của tổ tiên → tay/chân lệch vào giữa thân.
+     */
+    syncBoneContainers(skel) {
+        skel.ordered.forEach(b => {
+            if (!b.container) return;
+            b.container.position.set(b.wx, b.wy);
+            b.container.rotation = Math.atan2(b.wb, b.wa);
+            b.container.scale.set(Math.hypot(b.wa, b.wb), Math.hypot(b.wc, b.wd));
+        });
+    },
+
+    /** áp pose từ clip animation: setup pose → cộng track → IK → đẩy vào container */
+    applyPose(scene, clip, t) {
+        const skel = scene.spine;
+        if (!skel) return;
+        skel.setupPose();
+        clip.tracks.forEach(tr => {
+            const b = skel.bones.get(tr.bone);
+            if (!b || !tr.keys.length) return;
+            const s = sampleTrack(tr.keys, t);
+            b.qx += s.x;
+            b.qy += s.y;
+            b.qrot += s.rotation;
+            b.qsx *= s.scale;
+            b.qsy *= s.scale;
+        });
+        skel.updateWorldTransform();
+        this.solveIK(skel);
+        this.syncBoneContainers(skel);
+    },
+
+    /** IK 2 xương: ghim bàn chân vào target gốc → chân không đung đưa khi hips/torso động */
+    solveIK(skel) {
+        const iks = skel.ik || [];
+        for (const c of iks) {
+            const b1 = skel.bones.get(c.bones[0]);
+            const b2 = skel.bones.get(c.bones[1]);
+            const tg = skel.bones.get(c.target);
+            if (!b1 || !b2 || !tg) continue;
+            let tx, ty;
+            if (tg.parent) {
+                tx = tg.parent.wa * tg.x + tg.parent.wb * tg.y + tg.parent.wx;
+                ty = tg.parent.wc * tg.x + tg.parent.wd * tg.y + tg.parent.wy;
+            } else { tx = tg.x; ty = tg.y; }
+            // solveTwoBoneIK xoay cả 2 bone trong world space
+            solveTwoBoneIK(skel, b1.name, b2.name, tx, ty, (c.bend ?? 1) > 0);
+            // đổi góc world → local (trừ góc cha); b2 phải inherit rotation để cộng dồn đúng
+            for (const b of [b1, b2]) b.inheritRotation = true;
+            const deg = v => Math.atan2(v.wb, v.wa) * 180 / Math.PI;
+            b1.qrot = deg(b1) - (b1.parent ? deg(b1.parent) : 0);
+            skel.updateWorldTransform();
+            b2.qrot = deg(b2) - deg(b1);
+            skel.updateWorldTransform();
+        }
+    },
+
+    /** 1 sprite / bone: đặt ảnh vào đúng khớp, chỉ xoay/scale, không scale lệch trục
+        (bone world matrix bị shear khi nhiều nước xoay chồng nhau) */
+    syncParts(skel) {
+        skel.ordered.forEach(b => {
+            const sp = b.sprite;
+            if (!sp) return;
+            sp.position.set(0, 0);
+            sp.rotation = (sp.baseRot || 0) + Math.atan2(b.wb, b.wa);
+            sp.scale.set(1, 1);
+        });
+    }
+};
+
+/* nội suy key: linear (mặc định) · ease · easeIn · easeOut · easeInOut · step */
+function rigEase(p, type) {
+    const x = Math.max(0, Math.min(1, p));
+    switch (String(type || 'linear')) {
+        case 'step': return 0;
+        case 'ease': return x * x * (3 - 2 * x);
+        case 'easeIn': return x * x * x;
+        case 'easeOut': return 1 - Math.pow(1 - x, 3);
+        case 'easeInOut': return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+        default: return x;
+    }
+}
+
+function sampleTrack(keys, t) {
+    const o = { x: 0, y: 0, rotation: 0, scale: 1 };
+    if (t <= keys[0].t) return Object.assign(o, keys[0], { scale: keys[0].scale ?? 1 });
+    const last = keys[keys.length - 1];
+    if (t >= last.t) return Object.assign(o, last, { scale: last.scale ?? 1 });
+    for (let i = 0; i < keys.length - 1; i++) {
+        const a = keys[i], b = keys[i + 1];
+        if (t >= a.t && t <= b.t) {
+            const p = rigEase((b.t - a.t) ? (t - a.t) / (b.t - a.t) : 0, b.ease || 'linear');
+            o.x = (a.x || 0) + ((b.x || 0) - (a.x || 0)) * p;
+            o.y = (a.y || 0) + ((b.y || 0) - (a.y || 0)) * p;
+            o.rotation = (a.rotation || 0) + ((b.rotation || 0) - (a.rotation || 0)) * p;
+            o.scale = (a.scale ?? 1) + ((b.scale ?? 1) - (a.scale ?? 1)) * p;
+            break;
+        }
+    }
+    return o;
+}
+
+/* ---------------------------------------------------------------------
+   4. ANIMATION SYSTEM
+   --------------------------------------------------------------------- */
+class AnimationSystem {
+    constructor() { this.clips = []; this.currentClip = null; }
+
+    loadClips(clips, keep) {
+        const cur = keep && this.currentClip ? this.currentClip.id : null;
+        this.clips = clips || [];
+        this.currentClip = (cur && this.clips.find(c => c.id === cur)) || this.clips[0] || null;
+        Engine.playTime = 0;
+        renderDopesheet();
+        updateClipHUD();
+    }
+
+    setCurrent(id) {
+        this.currentClip = this.clips.find(c => c.id === id) || this.clips[0] || null;
+        Engine.playTime = 0;
+        renderDopesheet();
+        updateClipHUD();
+    }
+
+    trackFor(bone) {
+        return this.currentClip ? this.currentClip.tracks.find(t => t.bone === bone) || null : null;
+    }
+
+    toJSON() { return { animations: this.clips }; }
+}
+
+/* ---------------------------------------------------------------------
+   5. SCENE
+   --------------------------------------------------------------------- */
+class EditorScene {
+    constructor(app) {
+        this.app = app;
+        this.sceneRoot = new PIXI.Container();
+        app.stage.addChild(this.sceneRoot);
+        this.world = new PIXI.Container();
+        this.sceneRoot.addChild(this.world);
+        this.rigLayer = null;
+        this.spine = null;
+        this.spineDebug = null;
+        this.rigReady = false;
+        this._bounds = null;
+    }
+
+    layoutSpine() {
+        if (!this.rigLayer) return;
+        this.world.position.set(0, 0);
+        this.world.scale.set(1);
+        const b = this.rigLayer.getLocalBounds();
+        if (!b || b.width < 1 || b.height < 1) return; // giữ nguyên frame trước, không nhảy về 0,0
+        // rigLayer chứa được cả sprite đang tắt → quy đổi bbox về world của rigLayer
+        const s0 = this.rigLayer.worldTransform;
+        const corners = [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]]
+            .map(([x, y]) => [s0.a * x + s0.c * y + s0.tx, s0.b * x + s0.d * y + s0.ty]);
+        const minX = Math.min(...corners.map(c => c[0])), maxX = Math.max(...corners.map(c => c[0]));
+        const minY = Math.min(...corners.map(c => c[1])), maxY = Math.max(...corners.map(c => c[1]));
+        const wb = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+        // bbox world (rigLayer đã tách khỏi sceneRoot, worldTransform = local của rigLayer)
+        if (s0.a === 1 && s0.b === 0 && s0.c === 0 && s0.d === 1) this._bounds = { x: b.x, y: b.y, w: b.width, h: b.height };
+        else this._bounds = { x: wb.x, y: wb.y, w: wb.width, h: wb.height };
+        const pad = 24;
+        const s = Math.min(
+            (this.app.renderer.width - pad * 2) / wb.width,
+            (this.app.renderer.height - pad * 2) / wb.height
+        );
+        this.world.scale.set(s);
+        this.world.position.set(
+            this.app.renderer.width / 2 - (wb.x + wb.width / 2) * s,
+            this.app.renderer.height / 2 - (wb.y + wb.height / 2) * s
+        );
+    }
+
+    drawSpineDebug() {
+        if (!this.spineDebug || !this.spine) return;
+        const g = this.spineDebug;
+        g.clear();
+        if (!g.visible) return;
+        const w = (this.world && this.world.scale.x) || 1;
+        this.spine.ordered.forEach(b => {
+            if (!b.length) return;
+            const ex = b.wx + b.wa * b.length, ey = b.wy + b.wb * b.length;
+            g.moveTo(b.wx, b.wy).lineTo(ex, ey).stroke({ width: 2 / w, color: 0x22c55e, alpha: 0.95 });
+            g.circle(b.wx, b.wy, 3.4 / w).fill({ color: 0xffffff }).stroke({ width: 1.5 / w, color: 0x16a34a });
+        });
+    }
+
+    update(dt) {
+        const clip = Engine.animation.currentClip;
+        if (this.spine && clip) {
+            if (Engine.isPlaying) {
+                const dur = clip.duration || 1;
+                // speed: tua nhanh/chậm do Rig Advanced đặt (0.25x – 2x)
+                const sp = (typeof RigAdvanced !== 'undefined' && RigAdvanced.speed) || 1;
+                Engine.playTime = (Engine.playTime + dt * sp) % dur;
+                SpineRig.applyPose(this, clip, Engine.playTime);
+                setText('current-frame', Engine.playTime.toFixed(2));
+            }
+            this.drawSpineDebug();
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------
+   6. ENGINE
+   --------------------------------------------------------------------- */
+const Engine = {
+    app: null,
+    scene: null,
+    animation: new AnimationSystem(),
+    isPlaying: true,
+    playTime: 0,
+    selectedBone: null,
+
+    async boot() {
+        if (!(await PartAtlas.load())) throw new Error('Không tải được sprite sheet');
+        AutoNamer.applyToAll();
+
+        this.app = new PIXI.Application();
+        // host là container absolute inset-0 → đo đúng vùng viewport còn lại
+        // (trước đây cứng chiều cao 320px nên canvas tràn xuống timeline)
+        const host = document.getElementById('pixi-container');
+        const measure = () => ({
+            w: Math.max(320, host.clientWidth || 560),
+            h: Math.max(320, host.clientHeight || 520)
+        });
+        const m0 = measure();
+        await this.app.init({
+            width: m0.w,
+            height: m0.h,
+            backgroundAlpha: 0,
+            antialias: true,
+            resolution: Math.min(2, window.devicePixelRatio || 1),
+            autoDensity: true
+        });
+        document.getElementById('pixi-container').appendChild(this.app.canvas);
+        const ver = document.getElementById('engine-version');
+        if (ver) ver.textContent = 'v' + PIXI.VERSION;
+
+        this.scene = new EditorScene(this.app);
+        SpineRig.build(this.scene, false);
+        // vẽ ngay khung đầu tiên để preview có nhân vật trước cả clip idle
+        this.scene.update(0);
+
+        const fit = () => {
+            const m = measure();
+            if (Math.abs(m.w - this.app.renderer.width) > 1 || Math.abs(m.h - this.app.renderer.height) > 1) {
+                this.app.renderer.resize(m.w, m.h);
+            }
+            this.scene.layoutSpine();
+        };
+        fit();
+        window.addEventListener('resize', fit);
+        if (window.ResizeObserver) new ResizeObserver(fit).observe(host);
+
+        let last = performance.now();
+        this.app.ticker.add(() => {
+            const now = performance.now();
+            const dt = Math.min((now - last) / 1000, 0.05);
+            last = now;
+            setText('fps-label', Math.round(this.app.ticker.FPS));
+            this.scene.update(dt);
+        });
+
+        this.animation.loadClips(DEFAULT_CLIPS());
+        this.scene.layoutSpine();
+        this.scene.update(0);
+        renderPartsLibrary();
+        renderDopesheet();
+        updateClipHUD();
+        setStatus(`Atlas OK · ${PartAtlas.list().length} parts · ${this.scene.spine.ordered.length} bones`);
+    },
+
+    selectBone(name) {
+        this.selectedBone = name;
+        const b = this.scene.spine && this.scene.spine.bones.get(name);
+        if (!b) return;
+        const label = document.getElementById('transform-bone-name');
+        if (label) label.textContent = name;
+        const x = document.getElementById('inp-x');
+        const y = document.getElementById('inp-y');
+        const r = document.getElementById('inp-rot');
+        if (x) x.value = b.x.toFixed(1);
+        if (y) y.value = b.y.toFixed(1);
+        if (r) r.value = b.rotation.toFixed(1);
+        const sel = document.getElementById('select-bone-part');
+        if (sel) {
+            sel.innerHTML = '<option value="">— không part —</option>' +
+                PartAtlas.list().map(k => `<option value="${k}"${b.partKey === k ? ' selected' : ''}>${ATLAS_PARTS[k].vi}</option>`).join('');
+        }
+        renderSpineBonesList();
+    },
+
+    applyBoneEdit() {
+        const b = this.scene.spine && this.scene.spine.bones.get(this.selectedBone);
+        if (!b) return;
+        const g = id => parseFloat((document.getElementById(id) || {}).value) || 0;
+        b.x = g('inp-x');
+        b.y = g('inp-y');
+        b.rotation = g('inp-rot');
+        this.scene.spine.setupPose();
+        this.scene.spine.updateWorldTransform();
+        SpineRig.solveIK(this.scene.spine);
+        SpineRig.syncBoneContainers(this.scene.spine);
+        this.scene.layoutSpine();
+        this.scene.drawSpineDebug();
+        setStatus('Đã cập nhật bone ' + b.name);
+    },
+
+    assignPart(key) {
+        if (!this.selectedBone) { toast('Chọn một bone trước'); return; }
+        const b = this.scene.spine.bones.get(this.selectedBone);
+        if (!b) return;
+        if (b.sprite) { b.sprite.parent && b.sprite.parent.removeChild(b.sprite); b.sprite.destroy(); b.sprite = null; }
+        if (key) {
+            const tex = PartAtlas.textureFor(key);
+            if (tex) {
+                const sp = new PIXI.Sprite(tex);
+                sp.partTag = b.name;
+                sp.anchor.set(0, 0);
+                const tpl = SpineRig.TEMPLATE.find(t => t.name === b.name) || {};
+                const pv = tpl.pivot || [0.5, 0.1];
+                sp.pivot.set(tex.width * pv[0], tex.height * pv[1]);
+                sp.baseRot = -Math.PI / 2 + ((tpl.dir || 0) + (tpl.rot >= 180 ? 180 : 0)) * Math.PI / 180;
+                sp.rotation = sp.baseRot;
+                // sprite luôn là con của container bone (giữ z-order của bone)
+                b.container.addChild(sp);
+                b.sprite = sp;
+                b.partKey = key;
+                SpineRig.syncBoneContainers(this.scene.spine);
+            }
+        } else { b.partKey = null; }
+        renderSpineBonesList();
+        setStatus(`Bone ${b.name} ← ${key ? ATLAS_PARTS[key].vi : 'trống'}`);
+    },
+
+    snapshot() {
+        const a = document.createElement('a');
+        a.href = this.app.canvas.toDataURL('image/png');
+        a.download = 'quan_vu.png';
+        a.click();
+        toast('Đã xuất PNG');
+    }
+};
+
+/* ---------------------------------------------------------------------
+   7. CLIP MẶC ĐỊNH
+   --------------------------------------------------------------------- */
+function DEFAULT_CLIPS() {
+    return [
+        { id: 'idle', name: 'Idle', duration: 2.4, tracks: [
+            { bone: 'hips',        keys: [{ t: 0, y: 0 }, { t: 1.2, y: -4 }, { t: 2.4, y: 0 }] },
+            { bone: 'torso',       keys: [{ t: 0, rotation: 0 }, { t: 1.2, rotation: 1.5 }, { t: 2.4, rotation: 0 }] },
+            { bone: 'head',        keys: [{ t: 0, rotation: -2 }, { t: 1.2, rotation: 2.5 }, { t: 2.4, rotation: -2 }] },
+            { bone: 'arm_upper_L', keys: [{ t: 0, rotation: 2 }, { t: 1.2, rotation: 5 }, { t: 2.4, rotation: 2 }] },
+            { bone: 'arm_lower_L', keys: [{ t: 0, rotation: -4 }, { t: 1.2, rotation: -7 }, { t: 2.4, rotation: -4 }] },
+            { bone: 'arm_upper_R', keys: [{ t: 0, rotation: -2 }, { t: 1.2, rotation: -5 }, { t: 2.4, rotation: -2 }] },
+            { bone: 'arm_lower_R', keys: [{ t: 0, rotation: 4 }, { t: 1.2, rotation: 7 }, { t: 2.4, rotation: 4 }] },
+            { bone: 'hair_b',      keys: [{ t: 0, rotation: -1.5 }, { t: 1.2, rotation: 1.5 }, { t: 2.4, rotation: -1.5 }] }
+        ]},
+        { id: 'walk', name: 'Walk', duration: 1.2, tracks: [
+            { bone: 'hips',        keys: [{ t: 0, y: 0 }, { t: 0.3, y: -6 }, { t: 0.6, y: 0 }, { t: 0.9, y: -6 }, { t: 1.2, y: 0 }] },
+            { bone: 'leg_upper_L', keys: [{ t: 0, rotation: 24 }, { t: 0.6, rotation: -20 }, { t: 1.2, rotation: 24 }] },
+            { bone: 'leg_lower_L', keys: [{ t: 0, rotation: -20 }, { t: 0.6, rotation: 6 }, { t: 1.2, rotation: -20 }] },
+            { bone: 'leg_upper_R', keys: [{ t: 0, rotation: -20 }, { t: 0.6, rotation: 24 }, { t: 1.2, rotation: -20 }] },
+            { bone: 'leg_lower_R', keys: [{ t: 0, rotation: 6 }, { t: 0.6, rotation: -20 }, { t: 1.2, rotation: 6 }] },
+            { bone: 'arm_upper_L', keys: [{ t: 0, rotation: -16 }, { t: 0.6, rotation: 16 }, { t: 1.2, rotation: -16 }] },
+            { bone: 'arm_upper_R', keys: [{ t: 0, rotation: 16 }, { t: 0.6, rotation: -16 }, { t: 1.2, rotation: 16 }] },
+            { bone: 'torso',       keys: [{ t: 0, rotation: 2 }, { t: 0.6, rotation: -2 }, { t: 1.2, rotation: 2 }] },
+            { bone: 'head',        keys: [{ t: 0, rotation: -2 }, { t: 0.6, rotation: 2 }, { t: 1.2, rotation: -2 }] }
+        ]},
+        { id: 'attack', name: 'Attack (Vung kiếm)', duration: 1.1, tracks: [
+            { bone: 'hips',        keys: [{ t: 0, rotation: 0 }, { t: 0.3, rotation: 6 }, { t: 0.65, rotation: -8 }, { t: 1.1, rotation: 0 }] },
+            { bone: 'torso',       keys: [{ t: 0, rotation: 0 }, { t: 0.3, rotation: 10 }, { t: 0.65, rotation: -14 }, { t: 1.1, rotation: 0 }] },
+            { bone: 'head',        keys: [{ t: 0, rotation: 0 }, { t: 0.3, rotation: -6 }, { t: 0.65, rotation: 8 }, { t: 1.1, rotation: 0 }] },
+            { bone: 'arm_upper_R', keys: [{ t: 0, rotation: 0 }, { t: 0.3, rotation: -78 }, { t: 0.65, rotation: 62 }, { t: 1.1, rotation: 0 }] },
+            { bone: 'arm_lower_R', keys: [{ t: 0, rotation: 0 }, { t: 0.3, rotation: -30 }, { t: 0.65, rotation: 26 }, { t: 1.1, rotation: 0 }] },
+            { bone: 'hand_R',      keys: [{ t: 0, rotation: 0 }, { t: 0.3, rotation: -14 }, { t: 0.65, rotation: 18 }, { t: 1.1, rotation: 0 }] },
+            { bone: 'arm_upper_L', keys: [{ t: 0, rotation: 0 }, { t: 0.3, rotation: 26 }, { t: 0.65, rotation: -18 }, { t: 1.1, rotation: 0 }] },
+            { bone: 'hair_b',      keys: [{ t: 0, rotation: 0 }, { t: 0.65, rotation: -9 }, { t: 1.1, rotation: 0 }] }
+        ]},
+        { id: 'jump', name: 'Jump', duration: 0.9, tracks: [
+            { bone: 'hips',        keys: [{ t: 0, y: 0 }, { t: 0.18, y: 14 }, { t: 0.45, y: -70 }, { t: 0.72, y: 6 }, { t: 0.9, y: 0 }] },
+            { bone: 'leg_upper_L', keys: [{ t: 0, rotation: 0 }, { t: 0.18, rotation: 26 }, { t: 0.45, rotation: -10 }, { t: 0.72, rotation: 16 }, { t: 0.9, rotation: 0 }] },
+            { bone: 'leg_upper_R', keys: [{ t: 0, rotation: 0 }, { t: 0.18, rotation: 26 }, { t: 0.45, rotation: -18 }, { t: 0.72, rotation: 16 }, { t: 0.9, rotation: 0 }] },
+            { bone: 'leg_lower_L', keys: [{ t: 0, rotation: 0 }, { t: 0.45, rotation: 34 }, { t: 0.9, rotation: 0 }] },
+            { bone: 'leg_lower_R', keys: [{ t: 0, rotation: 0 }, { t: 0.45, rotation: 40 }, { t: 0.9, rotation: 0 }] },
+            { bone: 'arm_upper_L', keys: [{ t: 0, rotation: 0 }, { t: 0.45, rotation: -58 }, { t: 0.9, rotation: 0 }] },
+            { bone: 'arm_upper_R', keys: [{ t: 0, rotation: 0 }, { t: 0.45, rotation: 58 }, { t: 0.9, rotation: 0 }] }
+        ]}
+    ];
+}
+
+/* ---------------------------------------------------------------------
+   8. UI
+   --------------------------------------------------------------------- */
+function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+function setStatus(msg) { setText('rig-status-text', msg); }
+
+function renderSpineBonesList() {
+    const el = document.getElementById('bones-list');
+    if (!el || !Engine.scene || !Engine.scene.spine) return;
+    el.innerHTML = '';
+    Engine.scene.spine.ordered.forEach(b => {
+        const btn = document.createElement('button');
+        const active = Engine.selectedBone === b.name;
+        btn.className = 'w-full text-left px-2 py-1 rounded-md text-[10.5px] flex items-center gap-1.5 border ' +
+            (active ? 'bg-emerald-50 border-emerald-300 text-emerald-800 font-semibold' : 'border-transparent hover:bg-slate-100 text-slate-600');
+        btn.innerHTML = `<i class="fa-solid fa-bone text-[8px] ${b.sprite ? 'text-emerald-500' : 'text-slate-300'}"></i>
+            <span class="truncate">${b.name}</span>
+            ${b.partKey ? `<span class="text-[8px] px-1 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 truncate max-w-[64px]">${ATLAS_PARTS[b.partKey] ? ATLAS_PARTS[b.partKey].vi : b.partKey}</span>` : ''}`;
+        btn.onclick = () => Engine.selectBone(b.name);
+        el.appendChild(btn);
+    });
+}
+
+function renderPartsLibrary(filter) {
+    const el = document.getElementById('panel-parts');
+    if (!el) return;
+    const q = (typeof filter === 'string' ? filter : (document.getElementById('part-search') || {}).value || '').toLowerCase();
+    el.innerHTML = '';
+    PartAtlas.list().forEach(key => {
+        const d = ATLAS_PARTS[key];
+        if (q && !(key + (d.vi || '') + (d.autoNameVi || '')).toLowerCase().includes(q)) return;
+        const chip = document.createElement('button');
+        chip.className = 'part-chip relative rounded-md border border-slate-200 bg-white overflow-hidden hover:border-emerald-400';
+        chip.dataset.part = key;
+        chip.title = `${d.autoNameVi || d.vi} · ${key}`;
+        chip.onclick = () => Engine.assignPart(key);
+        const box = PartAtlas.trim(key) || d.cell;
+        const scale = Math.min(1, 52 / box.w, 52 / box.h);
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, box.w * scale);
+        cv.height = Math.max(1, box.h * scale);
+        const img = PartAtlas.images[d.sheet];
+        if (img) cv.getContext('2d').drawImage(img, box.x, box.y, box.w, box.h, 0, 0, cv.width, cv.height);
+        cv.className = 'mx-auto';
+        chip.appendChild(cv);
+        const lbl = document.createElement('div');
+        lbl.className = 'text-[8px] text-center text-slate-500 truncate px-0.5 pb-0.5';
+        lbl.textContent = d.autoNameVi || d.vi;
+        chip.appendChild(lbl);
+        // tên key kỹ thuật: AI phải dùng đúng key này trong JSON
+        const keyLbl = document.createElement('div');
+        keyLbl.className = 'part-key';
+        keyLbl.textContent = key;
+        chip.appendChild(keyLbl);
+        el.appendChild(chip);
+    });
+}
+
+function renderDopesheet() {
+    const names = document.getElementById('tracks-names');
+    const layer = document.getElementById('dopesheet-keyframes-layer');
+    if (!names || !layer) return;
+    names.innerHTML = '';
+    layer.innerHTML = '';
+    const clip = Engine.animation.currentClip;
+    if (!clip) return;
+    const colors = ['#22c55e', '#f59e0b', '#6366f1', '#ef4444', '#06b6d4'];
+    clip.tracks.forEach((tr, i) => {
+        const row = document.createElement('div');
+        row.className = 'h-6 px-2 flex items-center gap-1.5 border-b border-slate-100';
+        row.innerHTML = `<span class="w-1.5 h-1.5 rounded-full" style="background:${colors[i % 5]}"></span>
+            <span class="truncate">${tr.bone}</span>`;
+        names.appendChild(row);
+
+        const track = document.createElement('div');
+        track.className = 'h-6 border-b border-slate-100 relative';
+        tr.keys.forEach(k => {
+            const pct = Math.max(0, Math.min(100, (k.t / clip.duration) * 100));
+            const kf = document.createElement('div');
+            kf.className = 'key-kf';
+            kf.style.left = pct + '%';
+            kf.style.top = '50%';
+            kf.style.background = colors[i % 5];
+            track.appendChild(kf);
+        });
+        layer.appendChild(track);
+    });
+    // rig_advanced.js: vẽ playhead + tay nắm key kéo được
+    if (window.RigAdvanced && RigAdvanced.afterTimelineRender) RigAdvanced.afterTimelineRender();
+}
+
+function updateClipHUD() {
+    const c = Engine.animation.currentClip;
+    setText('clip-duration', c ? c.duration.toFixed(1) : '0');
+    const sel = document.getElementById('select-clip');
+    if (sel && c) {
+        sel.innerHTML = Engine.animation.clips.map(x =>
+            `<option value="${x.id}"${x.id === c.id ? ' selected' : ''}>${x.name}</option>`).join('');
+    }
+}
+
+function togglePlayState(force) {
+    Engine.isPlaying = force === undefined ? !Engine.isPlaying : force;
+    document.querySelectorAll('.play-icon').forEach(i =>
+        i.className = (Engine.isPlaying ? 'fa-solid fa-pause' : 'fa-solid fa-play') + ' play-icon text-xs');
+    if (Engine.isPlaying) Engine.playTime = 0;
+}
+
+function toggleSkeletonView() {
+    const on = document.getElementById('chk-skeleton-toggle').checked;
+    if (Engine.scene && Engine.scene.spineDebug) {
+        Engine.scene.spineDebug.visible = on;
+        Engine.scene.drawSpineDebug();
+    }
+}
+
+function switchCharacter(pose) {
+    SpineRig.build(Engine.scene, !!pose);
+    Engine.selectedBone = null;
+    setStatus(pose ? 'Tư thế 1 (anhtamquoc1.png)' : 'Atlas chuẩn (anhtamquoc2.png)');
+}
+
+function autoNameParts() {
+    const rows = AutoNamer.applyToAll();
+    renderPartsLibrary();
+    if (Engine.scene && Engine.scene.spine) renderSpineBonesList();
+    addChatMessage('assistant',
+        `**Đã tự đặt tên ${rows.length} bộ phận**\n\n\`\`\`\n` +
+        rows.map(r => `${r.key.padEnd(16)} ${r.vi.padEnd(18)} ${r.size}`).join('\n') + '\n\`\`\`');
+    setStatus(`Auto-name: ${rows.length} bộ phận`);
+}
+
+/* Asset import gắn ảnh lên app.stage (ngoài scene.world) và set scene.spine = null.
+   Nếu không dọn, ảnh cũ sẽ che rig mới → trông như "Auto Rig không hoạt động". */
+function clearCustomCharacter(scene) {
+    if (!scene) return;
+    if (scene.customSprite) {
+        if (scene.customSprite.parent) scene.customSprite.parent.removeChild(scene.customSprite);
+        scene.customSprite.destroy();
+        scene.customSprite = null;
+    }
+    // layer ảnh nằm trên stage, không phải scene.world
+    const stage = scene.app && scene.app.stage;
+    if (stage) {
+        stage.children.slice().forEach(ch => {
+            if (ch && ch.label === 'custom_layer') { stage.removeChild(ch); ch.destroy({ children: true }); }
+        });
+    }
+    if (scene.rigLayer && scene.rigLayer.label === 'custom_layer') scene.rigLayer = null;
+}
+
+function autoRigSpine() {
+    clearCustomCharacter(Engine.scene);
+    const s = SpineRig.build(Engine.scene, false);
+    // rig mới → nạp lại clip mặc định để timeline khớp bone mới
+    Engine.animation.loadClips(DEFAULT_CLIPS(), false);
+    Engine.playTime = 0;
+    Engine.isPlaying = true;
+    togglePlayState(true);
+    const attached = s.ordered.filter(b => b.sprite).length;
+    setStatus(`Spine rig: ${s.ordered.length} bones · ${attached} attachments`);
+    addChatMessage('assistant', `**Auto Rig (Spine)** — ${s.ordered.length} bones, ${attached} bộ phận được gắn.\n\n` +
+        '```\n' + s.ordered.map(b => `${b.name.padEnd(10)} ${b.partKey || '—'}`).join('\n') + '\n```');
+}
+
+function exportSpineJSON() {
+    if (!Engine.scene || !Engine.scene.spine) { toast('Chưa có skeleton'); return; }
+    const json = Engine.scene.spine.toSpineJSON();
+    json.animations = {};
+    Engine.animation.clips.forEach(c => {
+        json.animations[c.id] = {
+            bones: c.tracks.reduce((acc, tr) => {
+                acc[tr.bone] = {
+                    rotate: tr.keys.map(k => ({ time: k.t, angle: k.rotation || 0 }))
+                };
+                return acc;
+            }, {})
+        };
+    });
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'quanvu_spine.json';
+    a.click();
+    toast('Đã xuất quanvu_spine.json');
+}
+
+function downloadPackage() {
+    const pkg = {
+        skeleton: Engine.scene.spine.toSpineJSON(),
+        animations: Engine.animation.clips,
+        parts: Object.fromEntries(Object.entries(ATLAS_PARTS).map(([k, v]) => [k, {
+            slot: v.slot, vi: v.vi, autoNameVi: v.autoNameVi, cell: v.cell
+        }])),
+        engine: 'PixiJS ' + PIXI.VERSION,
+        exportedAt: new Date().toISOString()
+    };
+    const blob = new Blob([JSON.stringify(pkg, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'quanvu_rig_package.json';
+    a.click();
+    toast('Đã tải rig package');
+}
+
+function toast(msg) {
+    const t = document.getElementById('toast-message');
+    if (!t) return;
+    setText('toast-text', msg);
+    t.classList.remove('hidden');
+    clearTimeout(t._h);
+    t._h = setTimeout(() => t.classList.add('hidden'), 2600);
+}
+
+/* ---------------------------------------------------------------------
+   9. CHAT (ChatGPT thật + mock)
+   --------------------------------------------------------------------- */
+const Chat = {
+    history: [],
+    /** bối cảnh live: bone đang có + part đang gắn + clip sẵn có → AI sinh đúng tên bone */
+    context() {
+        const skel = Engine.scene && Engine.scene.spine;
+        const bones = skel ? skel.ordered.map(b => `${b.name}${b.parentName ? '←' + b.parentName : ''}${b.partKey ? '[' + b.partKey + ']' : ''}`) : [];
+        const parts = PartAtlas.list().join(', ');
+        const clips = Engine.animation.clips.map(c => `${c.id}(${c.duration}s)`).join(', ');
+        return `BONES HIỆN CÓ (${bones.length}): ${bones.join(', ')}
+PARTS ATLAS: ${parts}
+CLIPS: ${clips}`;
+    },
+    system: '',
+    buildSystem() {
+        return `Bạn là chuyên gia rig & animation 2D kiểu Spine chạy trên PixiJS v8.
+`+
+            `Nhân vật: Quan Vũ, dựng từ sprite sheet gồm các part rời (atlas). Hệ toạ độ Pixi: y hướng XUỐNG, đơn vị px.
+` +
+            `Xoay dương = theo chiều kim đồng hồ trên màn hình. Chiều dài bone (length) tính bằng px.
+
+` +
+            this.context() + `
+
+` +
+            `TRẢ LỜI ngắn gọn bằng tiếng Việt. Khi sinh dữ liệu thì để MỘT khối \`\`\`json duy nhất, chỉ JSON hợp lệ (không comment, không dấu phẩy cuối).
+` +
+            `RIG (chỉ khi người dùng yêu cầu dựng lại bộ xương):
+` +
+            `{"bones":[{"name":"head","parent":"neck","x":0,"y":0,"rotation":0,"length":120,"part":"head"}]}
+` +
+            ` - bones xếp cha trước con; part chỉ dùng đúng key trong PARTS ATLAS (bỏ trống nếu không có).
+` +
+            ` - giữ nguyên tên bone chuẩn (root, hips, torso, neck, head, arm_upper_L/R, arm_lower_L/R, hand_L/R, leg_upper_L/R, leg_lower_L/R, foot_L/R, hair_b...) để clip cũ còn dùng được.
+
+` +
+            `MOTION (sinh animation):
+` +
+            `{"clips":[{"id":"slash","name":"Vung đao","duration":1.0,"tracks":[{"bone":"arm_upper_R","keys":[{"t":0,"rotation":0},{"t":0.3,"rotation":-90},{"t":0.6,"rotation":40},{"t":1.0,"rotation":0}]}]}]}
+` +
+            `Quy tắc animation PRO bắt buộc:
+` +
+            ` 1) Anticipation (wind-up) → action (1-3 frame nhanh nhất) → follow-through/overshoot → settle (quá 1 vòng nhỏ rồi về 0).
+` +
+            ` 2) Overlapping action: tóc (hair_b, back_hair), vạt áo/đai (skirt, body_core) trễ 2-4 frame so với thân, biên độ nhỏ hơn.
+` +
+            ` 3) Arcs: tay vung theo cung, không đổi góc đột ngột giữa 2 key xa nhau.
+` +
+            ` 4) Weight: hips hạ 2-6px ở frame dậm, torso/head gật ngược chiều chuyển động, chân trụ không nhấc (đã có IK ghim foot_L/R).
+` +
+            ` 5) Key đầu và key cuối của mỗi track phải trùng nhau để loop sạch; t trong [0, duration], tăng dần.
+` +
+            ` 6) Chỉ dùng tên bone có trong BONES HIỆN CÓ. rotation tính bằng độ, x/y bằng px, scale mặc định 1.
+` +
+            `Ví dụ clip vung đao 1 nhịp: wind-up 0→0.28s (arm_upper_R -95°, torso -12°, hips y -4), slash 0.28→0.42s (arm_upper_R +55°,
+` +
+            `torso +14°, head -8), follow 0.42→0.7s về nhẹ quá đà ngược, settle 0.7→1.0s về 0; hair_b dao động ±10° trễ 0.06s.`;
+    },
+
+    async ask(text) {
+        const key = getAPIKey(currentModelConfig.provider);
+        const providerCfg = AI_PROVIDERS[currentModelConfig.provider];
+        this.history.push({ role: 'user', content: text });
+        
+        // chưa có key trong browser → dùng proxy server (.env) nếu có, không thì mock
+        if (!key || !key.startsWith(providerCfg.keyPrefix)) {
+            const local = await this.askLocalProxy(text);
+            if (local) { this.history.push({ role: 'assistant', content: local }); return local; }
+            return this.mock(text);
+        }
+
+        let res;
+        this.system = this.buildSystem();
+        const messages = [{ role: 'system', content: this.system }, ...this.history.slice(-8)];
+        
+        try {
+            // Xử lý từng provider riêng biệt
+            if (currentModelConfig.provider === 'agentrouter') {
+                // AgentRouter: chỉ cho phép client "đã đăng ký" qua /v1/responses (chat/completions → 401)
+                res = await fetch(providerCfg.apiEndpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'Authorization': 'Bearer ' + key,
+                        'User-Agent': 'codex_cli_rs/0.40.0',
+                        'originator': 'codex_cli_rs'
+                    },
+                    body: JSON.stringify({
+                        model: currentModelConfig.model,
+                        input: messages.map(m => ({
+                            role: m.role === 'system' ? 'developer' : m.role,
+                            content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: String(m.content || '') }]
+                        })),
+                        max_output_tokens: 4000
+                    })
+                });
+            } else if (currentModelConfig.provider === 'openai' || currentModelConfig.provider === 'deepseek' || currentModelConfig.provider === 'glm' || currentModelConfig.provider === 'xkiro' || currentModelConfig.provider === 'apinex' || currentModelConfig.provider === 'openrouter') {
+                // Các provider tương thích OpenAI API format
+                const openaiHeaders = {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + key
+                };
+                // OpenRouter yêu cầu HTTP-Referer và X-Title
+                if (currentModelConfig.provider === 'openrouter') {
+                    openaiHeaders['HTTP-Referer'] = window.location.origin;
+                    openaiHeaders['X-Title'] = 'Rig Studio';
+                }
+                res = await fetch(providerCfg.apiEndpoint, {
+                    method: 'POST',
+                    headers: openaiHeaders,
+                    body: JSON.stringify({
+                        model: currentModelConfig.model,
+                        messages: messages,
+                        temperature: currentModelConfig.provider === 'deepseek' ? 0.4 : 0.7,
+                        // DeepSeek/OpenAI: ép trả JSON thuần khi không cần giới thiệu dài
+                        max_tokens: 4000
+                    })
+                });
+            } else if (currentModelConfig.provider === 'gemini') {
+                // Google Gemini API format
+                const geminiEndpoint = `${providerCfg.apiEndpoint}/models/${currentModelConfig.model}:generateContent?key=${key}`;
+                const geminiMessages = messages.map(m => ({
+                    role: m.role === 'assistant' ? 'model' : 'user',
+                    parts: [{ text: m.content }]
+                }));
+                
+                res = await fetch(geminiEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: geminiMessages,
+                        generationConfig: {
+                            temperature: 0.7
+                        }
+                    })
+                });
+            }
+        } catch (e) {
+            throw new Error(`Không gọi được ${providerCfg.name}: ` + e.message);
+        }
+
+        // AgentRouter chặn nội dung tiếng Việt → gửi lại đúng request đó bằng prompt tiếng Anh
+        if (!res.ok && currentModelConfig.provider === 'agentrouter') {
+            const en = messages.map(m => m.role === 'user' ? { role: 'user', content: this.enRewrite(m.content) } : m);
+            try {
+                const retry = await fetch(providerCfg.apiEndpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'Authorization': 'Bearer ' + key,
+                        'User-Agent': 'codex_cli_rs/0.40.0',
+                        'originator': 'codex_cli_rs'
+                    },
+                    body: JSON.stringify({
+                        model: currentModelConfig.model,
+                        input: en.map(m => ({
+                            role: m.role === 'system' ? 'developer' : m.role,
+                            content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: String(m.content || '') }]
+                        })),
+                        max_output_tokens: 4000
+                    })
+                });
+                if (retry.ok) { res = retry; this._lastLang = 'en'; } else this._lastLang = null;
+            } catch (e) { this._lastLang = null; }
+        }
+        
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            let msg = '';
+            
+            // Xử lý lỗi tùy theo provider
+            if (currentModelConfig.provider === 'gemini') {
+                msg = err.error?.message || ('HTTP ' + res.status);
+            } else {
+                msg = err.error?.message || ('HTTP ' + res.status);
+            }
+            
+            if (res.status === 401) throw new Error('API key không hợp lệ hoặc đã bị thu hồi (401)' + (msg ? ' — ' + msg : ''));
+            if (res.status === 403) throw new Error('Key bị từ chối (403): ' + msg);
+            if (res.status === 404) throw new Error('Model "' + currentModelConfig.model + '" không tồn tại ở ' + providerCfg.name + ' (404): ' + msg);
+            if (res.status === 429) throw new Error('Hết quota / vượt giới hạn (429): ' + msg);
+            if (/content-blocked|content_blocked/i.test(msg)) {
+                throw new Error('Provider chặn nội dung (content-blocked). Với AgentRouter, tin nhắn có tiếng Việt/giật gân ' +
+                    'có thể bị bộ lọc của họ chặn — thử viết prompt bằng tiếng Anh hoặc ngắn hơn.');
+            }
+            throw new Error(msg);
+        }
+        
+        // Parse response theo format của từng provider
+        let reply;
+        if (currentModelConfig.provider === 'gemini') {
+            // Gemini response format
+            const data = await res.json();
+            reply = data.candidates?.[0]?.content?.parts?.[0]?.text || '(trống)';
+        } else if (currentModelConfig.provider === 'agentrouter') {
+            // Responses API: output_text hoặc output[].content[].text
+            const data = await res.json();
+            let t = data.output_text || '';
+            if (!t) t = (data.output || []).flatMap(o => (o.content || []).map(c => c.text || '')).join('');
+            reply = t || '(trống)';
+        } else {
+            // OpenAI-style response format (OpenAI, DeepSeek, GLM)
+            const data = await res.json();
+            const m = data.choices?.[0]?.message || {};
+            reply = m.content || m.reasoning_content || '(trống)';
+        }
+        
+        this.history.push({ role: 'assistant', content: reply });
+        return reply;
+    },
+
+    /** AgentRouter lọc nội dung khá nhạy với tiếng Việt. Prompt ngắn gọn bằng tiếng Anh,
+        kèm yêu cầu trả lời tiếng Việt → vượt bộ lọc và vẫn ra câu trả lời tiếng Việt. */
+    enRewrite(text) {
+        const wildcards = /vung đao|chém|đánh|combat|attack|giết|máu/i.test(text);
+        const rig = /rig|xương|spine|bone|bộ phận/i.test(text);
+        const anim = /animation|chuyển động|clip|diễn hoạt/i.test(text);
+        const parts = [];
+        parts.push('Reply in Vietnamese.');
+        if (rig && anim) parts.push('Task: build a 2D cutout skeleton rig (Spine style) and author an animation clip for it.');
+        else if (rig) parts.push('Task: build a 2D cutout skeleton rig (Spine style) for the character.');
+        else if (anim) parts.push('Task: author a professional animation clip for the current rig (anticipation, action, follow-through, settle; secondary motion for hair and cloth).');
+        else if (wildcards) parts.push('Task: create a stylized combat action clip for the current rig.');
+        else parts.push('Task: help with 2D skeletal rigging and animation in PixiJS.');
+        parts.push('Return the JSON block described in the system prompt.');
+        return parts.join(' ');
+    },
+
+    /** server local (proxy) nếu file được mở qua http(s) — key nằm trong .env ở server */
+    async askLocalProxy(text) {
+        if (!/^https?:/.test(location.protocol)) return null;
+        const provider = currentModelConfig.provider;
+        if (!['agentrouter', 'deepseek', 'openai', 'xkiro', 'apinex', 'kimi', 'openrouter'].includes(provider)) return null;
+        const send = msgs => fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // timeout: gateway AgentRouter hay treo → không để request quay vô hạn
+            signal: AbortSignal.timeout ? AbortSignal.timeout(120000) : undefined,
+            body: JSON.stringify({
+                provider,
+                model: currentModelConfig.model,
+                allowedModels: true,
+                temperature: provider === 'deepseek' ? 0.4 : 0.5,
+                messages: msgs
+            })
+        });
+        const readReply = async res => {
+            const data = await res.json().catch(() => ({}));
+            const m = (data.choices && data.choices[0] && data.choices[0].message) || {};
+            return m.content || data.reply || null;
+        };
+        const history = () => [{ role: 'system', content: this.buildSystem() }, ...this.history.slice(-8)];
+        try {
+            let res = await send(history());
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                if (res.status === 503) return null; // server không có key → mock
+                const msg = String(err.error?.message || err.error || ('HTTP ' + res.status));
+                // 404 = model không tồn tại ở provider này → thử provider khác có key trong .env
+                if (res.status === 404) {
+                    const alt = await this.askOtherProvider(msgs);
+                    if (alt) return alt;
+                }
+                // AgentRouter hay chặn prompt tiếng Việt (content-blocked) → LUÔN gửi lại bằng tiếng Anh
+                if (provider === 'agentrouter') {
+                    const h = history();
+                    for (let i = h.length - 1; i >= 0; i--) {
+                        if (h[i].role === 'user') { h[i] = { role: 'user', content: this.enRewrite(h[i].content) }; break; }
+                    }
+                    res = await send(h);
+                    if (res.ok) { this._lastLang = 'en'; return await readReply(res); }
+                }
+                throw new Error(msg);
+            }
+            this._lastLang = 'vi';
+            return await readReply(res);
+        } catch (e) {
+            if (e && e.name === 'TimeoutError') throw new Error('Server không phản hồi sau 120s (gateway treo) — thử lại hoặc đổi model.');
+            if (e && e.message && /^HTTP|không|Không|content/i.test(e.message)) throw e;
+            return null;
+        }
+    },
+
+    /** model hiện tại không có ở provider này (404) → thử provider khác đã có key trong .env */
+    async askOtherProvider(msgs) {
+        const order = ['openrouter', 'xkiro', 'apinex', 'kimi', 'agentrouter'];
+        for (const provider of order) {
+            if (provider === currentModelConfig.provider) continue;
+            if (!serverHasKey(provider)) continue;
+            const cfg = AI_PROVIDERS[provider];
+            const model = (cfg && cfg.models && cfg.models[0]) || '';
+            if (!model) continue;
+            try {
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: AbortSignal.timeout ? AbortSignal.timeout(120000) : undefined,
+                    body: JSON.stringify({ provider, model, allowedModels: true, temperature: 0.5, messages: msgs })
+                });
+                if (!res.ok) continue;
+                const data = await res.json().catch(() => ({}));
+                const m = (data.choices && data.choices[0] && data.choices[0].message) || {};
+                if (m.content) {
+                    this._lastLang = 'vi';
+                    toast(`Model không có ở ${currentModelConfig.provider} → dùng ${provider}:${model}`);
+                    return m.content;
+                }
+            } catch (e) { /* thử provider kế tiếp */ }
+        }
+        return null;
+    },
+
+    mock(text) {
+        if (/rig|xương|spine/i.test(text)) {
+            const names = (Engine.scene && Engine.scene.spine)
+                ? Engine.scene.spine.ordered.map(b => b.name).join(', ')
+                : 'chưa có skeleton';
+            const providerName = AI_PROVIDERS[currentModelConfig.provider].name;
+            return `**Mock mode** (chưa có API key)\n\nSkeleton hiện tại:\n\`\`\`\n${names}\n\`\`\`\n\n` +
+                `Thêm API key ở nút khoá để ${providerName} sinh rig/animation thật.`;
+        }
+        if (/animation|chuyển động|vung/i.test(text)) {
+            const providerName = AI_PROVIDERS[currentModelConfig.provider].name;
+            return '**Mock mode**\n\nCác clip sẵn có: Idle, Attack (Vung đao), Walk. ' +
+                `Thêm API key để ${providerName} sinh clip mới.`;
+        }
+        const providerName = AI_PROVIDERS[currentModelConfig.provider].name;
+        return `**Mock mode** — ${text}\n\nTôi có thể: tự đặt tên bộ phận, dựng rig kiểu Spine, sinh animation. Cần API key cho ${providerName} hoạt động thật.`;
+    }
+};
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+/** escape cho giá trị nằm trong attribute HTML (src="...") */
+function attrEsc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/* =====================================================================
+   ẢNH TRONG KHUNG CHAT + VIEWER MỞ RỘNG
+   ---------------------------------------------------------------------
+   • Mọi ảnh AI sinh ra (markdown, URL, data URI, file trong /generated)
+     được đăng ký vào ChatImages rồi render thành thumbnail trong bong bóng chat.
+   • Bấm thumbnail → ImageViewer: zoom (lăn chuột / nút), kéo để di chuyển,
+     vừa khung, 1:1, tải về, dùng làm nhân vật, rig trực tiếp nếu là SVG.
+   ===================================================================== */
+const CHAT_IMG_EXTS = 'png|jpe?g|gif|webp|svg|bmp|avif';
+const CHAT_IMG_DATA_CHARS = '[A-Za-z0-9+/=%,;:!*()~$@?_+.-]';
+const CHAT_IMG_RE = new RegExp(
+    '!\\[([^\\]]*)\\]\\((\\S+?)\\)' +                                                     // 1,2 markdown ![alt](url)
+    '|(data:image\\/[a-z0-9.+-]+;[a-z0-9-]+=[a-z0-9-]+,' + CHAT_IMG_DATA_CHARS + '+?)' +        // 3   data URI
+    '|(https?:\\/\\/[^\\s"\'<>()]+?\\.(?:' + CHAT_IMG_EXTS + ')(?:\\?[^\\s"\'<>()]*)?)' +     // 4   URL http(s)
+    '|(\\/(?:generated|assets)\\/[^\\s"\'<>()]+?\\.(?:' + CHAT_IMG_EXTS + '))' +               // 5   file nội bộ
+    '|\\[\\[img:([\\w.-]+)\\]\\]',                                                          // 6   marker key
+    'gi');
+
+/** loại ảnh: 'svg' (vector, rig được) hay 'image' (raster) */
+function chatImageKind(src) {
+    if (/^data:image\/svg\+xml/i.test(src)) return 'svg';
+    if (/\.svg(?:\?|#|$)/i.test(src)) return 'svg';
+    return 'image';
+}
+
+/** data URI (base64 hoặc percent-encoded) → text; null nếu không decode được */
+function decodeDataUriText(src) {
+    const i = String(src).indexOf(',');
+    if (i < 0) return null;
+    const head = src.slice(0, i), body = src.slice(i + 1);
+    try {
+        if (/;base64/i.test(head)) {
+            const bin = atob(body);
+            return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+        }
+        return decodeURIComponent(body);
+    } catch (e) { return null; }
+}
+
+/** text SVG → data URI base64 (an toàn tuyệt đối cho attribute src) */
+function svgTextToDataUri(text) {
+    const bytes = new TextEncoder().encode(String(text));
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return 'data:image/svg+xml;base64,' + btoa(bin);
+}
+
+/** SVG thiếu width/height → thêm theo viewBox để thumbnail có đúng tỉ lệ */
+function ensureSvgDisplaySize(src) {
+    if (!/^data:image\/svg\+xml/i.test(src)) return src;
+    const text = decodeDataUriText(src);
+    if (!text) return src;
+    const root = text.match(/<svg[^>]*>/i);
+    if (!root) return src;
+    if (/\swidth\s*=/i.test(root[0]) && /\sheight\s*=/i.test(root[0])) return src;
+    const vb = root[0].match(/viewBox\s*=\s*["']\s*(-?[\d.]+)[ ,]+(-?[\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)/i);
+    if (!vb) return src;
+    const w = Math.min(2048, Math.max(1, Math.round(parseFloat(vb[3]) || 200)));
+    const h = Math.min(2048, Math.max(1, Math.round(parseFloat(vb[4]) || 200)));
+    return svgTextToDataUri(text.replace(/<svg/i, `<svg width="${w}" height="${h}"`));
+}
+
+const MIME_EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif', 'image/svg+xml': '.svg' };
+function extForMime(mime) { return MIME_EXT[String(mime || '').toLowerCase()] || '.png'; }
+
+const ChatImages = {
+    map: new Map(),
+    seq: 0,
+
+    /** đăng ký 1 ảnh → key dùng trong HTML chat (cùng src → cùng key) */
+    register(src, opts = {}) {
+        if (!src) return '';
+        const url = ensureSvgDisplaySize(String(src));
+        for (const [k, v] of this.map) if (v.src === url) return k;
+        const key = 'img' + (++this.seq);
+        this.map.set(key, {
+            key,
+            src: url,
+            label: opts.label || '',
+            title: opts.title || opts.label || 'ảnh AI',
+            kind: chatImageKind(url),
+            canRig: opts.canRig !== undefined ? !!opts.canRig : chatImageKind(url) === 'svg'
+        });
+        return key;
+    },
+
+    /** tạo key + trả về đoạn markdown để chèn vào tin nhắn */
+    registerMarkdown(src, opts = {}) {
+        const key = this.register(src, opts);
+        return key ? `[[img:${key}]]` : '';
+    },
+
+    get(key) { return this.map.get(key) || null; },
+
+    /** ảnh (raster) → File để đưa vào AssetLibrary */
+    async asFile(it) {
+        const base = (it.label || 'anh_ai').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'anh_ai';
+        if (it.src.startsWith('data:')) {
+            const head = it.src.slice(5, it.src.indexOf(','));
+            const mime = head.split(';')[0] || 'image/png';
+            const bin = atob(it.src.slice(it.src.indexOf(',') + 1));
+            const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+            return new File([bytes], base + extForMime(mime), { type: mime });
+        }
+        const r = await fetch(it.src);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const blob = await r.blob();
+        const mime = blob.type || 'image/png';
+        return new File([blob], base + extForMime(mime), { type: mime });
+    },
+
+    /** data URI / URL → text SVG gốc */
+    async svgSource(it) {
+        if (it.src.startsWith('data:')) {
+            const t = decodeDataUriText(it.src);
+            if (!t) throw new Error('Không đọc được SVG');
+            return t;
+        }
+        const r = await fetch(it.src);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return await r.text();
+    }
+};
+
+function chatImageError(el) {
+    const wrap = el.closest ? el.closest('.chat-img-wrap') : null;
+    el.style.display = 'none';
+    if (!wrap || wrap.querySelector('.chat-img-err')) return;
+    const d = document.createElement('div');
+    d.className = 'chat-img-err p-2';
+    d.textContent = '⚠️ Không tải được ảnh này';
+    wrap.appendChild(d);
+}
+window.chatImageError = chatImageError;
+
+/** HTML thumbnail cho 1 ảnh đã đăng ký */
+function chatImageHtml(key) {
+    const it = ChatImages.get(key);
+    if (!it) return '';
+    const act = it.kind === 'svg' ? 'SVG' : 'IMG';
+    return `<div class="chat-img-wrap" title="Bấm để mở rộng · zoom · tải" onclick="ImageViewer.open('${key}')">` +
+        `<span class="chat-img-badge">${act}</span>` +
+        `<img src="${attrEsc(it.src)}" alt="${attrEsc(it.label || 'ảnh AI')}" loading="lazy" draggable="false" onerror="chatImageError(this)">` +
+        `<span class="chat-img-zoom">🔍 mở rộng</span>` +
+        `</div>`;
+}
+
+/* ---------------- VIEWER MỞ RỘNG (zoom / pan / tải / rig) ---------------- */
+const ImageViewer = {
+    key: null, scale: 1, tx: 0, ty: 0, fitScale: 1, _drag: null, _lastDragMoved: 0, _inited: false,
+
+    el() { return document.getElementById('img-viewer'); },
+    stage() { return document.getElementById('img-viewer-stage'); },
+    img() { return document.getElementById('img-viewer-img'); },
+    isOpen() { const e = this.el(); return !!e && e.classList.contains('open'); },
+
+    open(key) {
+        const it = ChatImages.get(key);
+        if (!it) { toast('Không tìm thấy ảnh'); return; }
+        const box = this.el(), img = this.img(), stage = this.stage();
+        if (!box || !img || !stage) return;
+        this.key = key;
+        this.scale = 1; this.tx = 0; this.ty = 0;
+
+        setText('img-viewer-title', it.title || it.label || 'ảnh');
+        setText('img-viewer-meta', it.kind === 'svg' ? '· SVG vector' : '');
+        document.getElementById('img-viewer-use').style.display = it.kind === 'svg' ? 'none' : '';
+        document.getElementById('img-viewer-rig').style.display = it.kind === 'svg' ? '' : 'none';
+
+        box.classList.add('open');
+        img.onload = () => this.fit();
+        img.onerror = () => { toast('Không tải được ảnh'); this.close(); };
+        img.src = it.src;
+        if (img.complete && img.naturalWidth) this.fit();
+        this.init();
+    },
+
+    close() {
+        const box = this.el();
+        if (box) box.classList.remove('open');
+        this._drag = null;
+        this._lastDragMoved = 0;
+        const stage = this.stage();
+        if (stage) stage.classList.remove('dragging');
+        this.key = null;
+    },
+
+    /** áp transform hiện tại */
+    apply() {
+        const img = this.img();
+        if (!img) return;
+        img.style.transform = `translate(${this.tx.toFixed(2)}px, ${this.ty.toFixed(2)}px) scale(${this.scale})`;
+        const z = document.getElementById('img-viewer-zoom');
+        if (z) z.textContent = Math.round(this.scale * 100) + '%';
+    },
+
+    center(fit) {
+        const stage = this.stage(), img = this.img();
+        if (!stage || !img || !img.naturalWidth) return;
+        const sw = stage.clientWidth, sh = stage.clientHeight;
+        const iw = img.naturalWidth, ih = img.naturalHeight;
+        this.fitScale = fit ? Math.min(sw / iw, sh / ih, 4) : this.scale;
+        this.scale = this.fitScale;
+        this.tx = (sw - iw * this.scale) / 2;
+        this.ty = (sh - ih * this.scale) / 2;
+        this.apply();
+    },
+
+    fit() { this.center(true); },
+
+    actual() {
+        const stage = this.stage(), img = this.img();
+        if (!stage || !img || !img.naturalWidth) return;
+        const sw = stage.clientWidth, sh = stage.clientHeight;
+        this.scale = 1;
+        this.tx = (sw - img.naturalWidth) / 2;
+        this.ty = (sh - img.naturalHeight) / 2;
+        this.apply();
+    },
+
+    /** zoom quanh 1 điểm (mặc định: tâm khung) */
+    zoomAt(cx, cy, factor) {
+        const stage = this.stage(), img = this.img();
+        if (!stage || !img || !img.naturalWidth) return;
+        const rect = stage.getBoundingClientRect();
+        const px = (cx === undefined ? rect.left + rect.width / 2 : cx) - rect.left;
+        const py = (cy === undefined ? rect.top + rect.height / 2 : cy) - rect.top;
+        const prev = this.scale;
+        const next = Math.min(16, Math.max(0.05, prev * factor));
+        if (Math.abs(next - prev) < 1e-6) return;
+        const ix = (px - this.tx) / prev, iy = (py - this.ty) / prev;
+        this.scale = next;
+        this.tx = px - ix * next;
+        this.ty = py - iy * next;
+        this.apply();
+    },
+
+    step(dir) { this.zoomAt(undefined, undefined, dir > 0 ? 1.25 : 0.8); },
+
+    download() {
+        const it = ChatImages.get(this.key);
+        if (!it) return;
+        const base = (it.title || it.label || 'anh_ai').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'anh_ai';
+        const ext = it.kind === 'svg' ? '.svg' : (/^data:(image\/[\w.+-]+)/i.test(it.src) ? extForMime(RegExp.$1) : '');
+        const a = document.createElement('a');
+        a.href = it.src;
+        a.download = base + ext;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        toast('Đang tải ảnh...');
+    },
+
+    /** ảnh raster → AssetLibrary → làm nhân vật trong viewport */
+    async useAsCharacter() {
+        const it = ChatImages.get(this.key);
+        if (!it) return;
+        try {
+            const file = await ChatImages.asFile(it);
+            const item = await AssetLibrary.addFile(file);
+            AssetLibrary.useAsCharacter(item.id);
+            this.close();
+        } catch (e) {
+            toast('Không dùng được ảnh: ' + e.message);
+        }
+    },
+
+    /** SVG có part tách rời → dựng rig + clip ngay */
+    async rigSvg() {
+        const it = ChatImages.get(this.key);
+        if (!it) return;
+        if (typeof SvgCharacter === 'undefined') { toast('Chưa nạp SvgCharacter'); return; }
+        try {
+            const text = await ChatImages.svgSource(it);
+            if (!/<svg/i.test(text)) throw new Error('không phải SVG');
+            const res = await SvgCharacter.load(text, Engine.scene);
+            if (Engine._fitted !== undefined) Engine._fitted = false;
+            Engine.animation.loadClips(SVG_CLIPS(res.skel), true);
+            Engine.isPlaying = true;
+            togglePlayState(true);
+            this.close();
+            setStatus(`Rig SVG: ${res.count} parts · ${res.skel.ordered.length} bones`);
+            addChatMessage('assistant', `🦴 **Đã rig ảnh SVG**: ${res.count} bộ phận · ${res.skel.ordered.length} bones. Chọn clip ở timeline dưới viewport.`);
+            toast('Đã rig ảnh SVG');
+        } catch (e) {
+            toast('Rig SVG lỗi: ' + e.message);
+        }
+    },
+
+    /** gắn sự kiện 1 lần: wheel zoom, kéo di chuyển, phím tắt, resize */
+    init() {
+        if (this._inited) return;
+        this._inited = true;
+        const box = this.el(), stage = this.stage();
+        if (!box || !stage) return;
+
+        stage.addEventListener('wheel', e => {
+            if (!this.isOpen()) return;
+            e.preventDefault();
+            this.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0018));
+        }, { passive: false });
+
+        stage.addEventListener('dblclick', () => { this.scale > this.fitScale * 1.01 ? this.fit() : this.actual(); });
+
+        stage.addEventListener('pointerdown', e => {
+            if (!this.isOpen()) return;
+            this._drag = { x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty, id: e.pointerId, moved: 0 };
+            stage.classList.add('dragging');
+            try { stage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        });
+        stage.addEventListener('pointermove', e => {
+            if (!this._drag) return;
+            const dx = e.clientX - this._drag.x, dy = e.clientY - this._drag.y;
+            this._drag.moved += Math.abs(dx) + Math.abs(dy);
+            this.tx = this._drag.tx + dx;
+            this.ty = this._drag.ty + dy;
+            this.apply();
+        });
+        const endDrag = () => {
+            if (this._drag) this._lastDragMoved = this._drag.moved;
+            this._drag = null;
+            stage.classList.remove('dragging');
+        };
+        stage.addEventListener('pointerup', endDrag);
+        stage.addEventListener('pointercancel', endDrag);
+        stage.addEventListener('pointerleave', endDrag);
+
+        // bấm nền tối (ngoài ảnh) để đóng — nhưng bỏ qua nếu vừa kéo để di chuyển ảnh
+        box.addEventListener('click', e => {
+            if (this._lastDragMoved > 6) { this._lastDragMoved = 0; return; }
+            if (e.target === box || e.target === stage) this.close();
+        });
+
+        document.addEventListener('keydown', e => {
+            if (!this.isOpen()) return;
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.close(); return; }
+            if (e.key === 'f' || e.key === 'F') { this.fit(); return; }
+            if (e.key === '1') { this.actual(); return; }
+            if (e.key === '+' || e.key === '=') { this.step(1); return; }
+            if (e.key === '-' || e.key === '_') { this.step(-1); return; }
+        }, true);
+
+        window.addEventListener('resize', () => { if (this.isOpen()) this.center(true); });
+    }
+};
+
+/* ---------------- ảnh trong chat ----------------
+   `![](url)` · URL ảnh trần · data URI · file trong /generated|/assets
+   → render thành thumbnail bấm được; marker `[[img:key]]` cho ảnh sinh trong RAM (SVG). */
+/* inline markdown: bold, italic, inline code, link (chạy trên text ĐÃ escape) */
+function renderMdInline(s) {
+    let t = s;
+    t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    t = t.replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, '$1<em>$2</em>');
+    t = t.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
+    // link [text](url) — url đã escape nên &amp; phải trả lại cho href
+    t = t.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        (m, label, url) => `<a class="md-link" href="${url.replace(/&amp;/g, '&')}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+    return t;
+}
+
+/* block markdown: heading, list, quote, hr, đoạn văn */
+function renderMdBlock(raw) {
+    const lines = String(raw).replace(/\r\n?/g, '\n').split('\n');
+    let out = '', list = null, para = [];
+    const flushPara = () => {
+        if (!para.length) return;
+        out += `<div class="md-p">${para.map(renderMdInline).join('<br>')}</div>`;
+        para = [];
+    };
+    const flushList = () => {
+        if (!list) return;
+        out += `<${list.tag} class="${list.tag === 'ol' ? 'md-ol' : 'md-ul'}">` +
+            list.items.map(it => `<li>${renderMdInline(it)}</li>`).join('') + `</${list.tag}>`;
+        list = null;
+    };
+    for (const line of lines) {
+        // dòng mở khối code: ```json / ``` / ```json {"a":1}  (phần sau dấu ``` là code luôn)
+        const fenceOpen = line.match(/^\s{0,3}(?:```|~~~)\s*([\w+#.-]*)\s*(.*)$/);
+        // tiêu đề: '#' đứng đầu dòng + khoảng trắng; không nhận dòng mở code
+        const h = fenceOpen ? null : line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+        const fenceClose = /^\s{0,3}(?:```|~~~)\s*$/.test(line);
+        const ul = line.match(/^\s{0,3}[-*+]\s+(.*)$/);
+        const ol = line.match(/^\s{0,3}\d+[.)]\s+(.*)$/);
+        const q = line.match(/^\s{0,3}&gt;\s?(.*)$/);   // '>' đã bị escapeHtml thành &gt;
+        // dòng chỉ có '#' hoặc '>' trần (AI viết lỗi) → bỏ, không in ra
+        const hashOnly = /^\s{0,3}#+\s*$/.test(line);
+        const quoteOnly = /^\s{0,3}&gt;\s*$/.test(line);
+        if (fenceClose || hashOnly || quoteOnly) {
+            // dấu ``` lạc, '#' trần, '>' trần → bỏ, không in ra
+            flushPara(); flushList();
+        } else if (fenceOpen) {
+            // khối code chưa đóng (AI trả lời bị cắt) → hiện nguyên văn, không nuốt phần còn lại
+            flushPara(); flushList();
+            const body = fenceOpen[2] || '';
+            out += `<div class="my-2 rounded-lg overflow-hidden border border-slate-200">
+                <div class="chat-code-head"><span>${escapeHtml(fenceOpen[1] || 'code')}</span>
+                  <span class="code-tools"><button onclick="copyCode(this)">Sao chép</button></span></div>
+                <pre class="bg-slate-900 text-emerald-300 text-[11px] p-2.5 overflow-x-auto max-h-52">${escapeHtml(body)}</pre>
+              </div>`;
+        } else if (h) {
+            flushPara(); flushList();
+            const lv = h[1].length;
+            const title = h[2].replace(/\s+#+\s*$/, '');   // bỏ '##' đóng ở cuối tiêu đề
+            out += `<div class="md-h md-h${lv}">${renderMdInline(title)}</div>`;
+        } else if (ul || ol) {
+            flushPara();
+            const tag = ul ? 'ul' : 'ol';
+            if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+            list.items.push((ul || ol)[1]);
+        } else if (q) {
+            flushPara(); flushList();
+            out += `<div class="md-quote">${renderMdInline(q[1])}</div>`;
+        } else if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+            flushPara(); flushList();
+            out += '<hr class="md-hr">';
+        } else if (!line.trim()) {
+            flushPara(); flushList();
+        } else {
+            flushList();
+            para.push(line);
+        }
+    }
+    flushPara(); flushList();
+    return out;
+}
+
+function renderMd(text) {
+    // tách khối code: ```lang\n...``` — dấu ``` đóng nằm ở CUỐI khối nên không lọt vào text
+    const parts = String(text).split(/```([\w+#.-]*)[ \t]*\n?([\s\S]*?)```/g);
+    let out = '';
+    for (let i = 0; i < parts.length; i += 3) {
+        let chunk = escapeHtml(parts[i] || '');
+        // dấu ``` lạc (khối chưa đóng / AI trả lời bị cắt) → bỏ, không in ra
+        chunk = chunk.replace(/^[ \t]*(?:```|~~~)[ \t]*$/gm, '');
+        // ảnh: markdown / URL trần / data URI / file nội bộ / marker [[img:key]]
+        chunk = chunk.replace(CHAT_IMG_RE, (m, alt, mdUrl, dataUrl, absUrl, localUrl, markerKey) => {
+            if (markerKey !== undefined) return chatImageHtml(markerKey);
+            const raw = mdUrl || dataUrl || absUrl || localUrl;
+            if (!raw) return m;
+            const url = raw.replace(/&amp;/g, '&');
+            return chatImageHtml(ChatImages.register(url, { label: alt || '' }));
+        });
+        out += renderMdBlock(chunk);
+        if (i + 2 < parts.length) {
+            const lang = escapeHtml(parts[i + 1] || 'json');
+            const code = escapeHtml(parts[i + 2] || '');
+            out += `<div class="my-2 rounded-lg overflow-hidden border border-slate-200">
+                <div class="chat-code-head">
+                  <span>${lang}</span>
+                  <span class="code-tools">
+                    <button onclick="copyCode(this)" title="Sao chép code">Sao chép</button>
+                    <button onclick="applyAICode(this)" title="Áp JSON vào engine">Áp vào engine</button>
+                  </span>
+                </div>
+                <pre class="bg-slate-900 text-emerald-300 text-[11px] p-2.5 overflow-x-auto max-h-52">${code}</pre>
+              </div>`;
+        }
+    }
+    return out;
+}
+
+/** sao chép nội dung khối code (hoặc text truyền vào) vào clipboard */
+async function copyCode(btn, text) {
+    let val = text;
+    if (val === undefined) {
+        const box = btn && btn.closest('div');
+        const pre = box && box.parentElement && box.parentElement.querySelector('pre');
+        val = pre ? pre.textContent : '';
+    }
+    try {
+        if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(val);
+        else {
+            const ta = document.createElement('textarea');
+            ta.value = val; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+        }
+        toast('Đã sao chép');
+        if (btn) { const old = btn.textContent; btn.textContent = 'Đã chép ✓'; setTimeout(() => { btn.textContent = old; }, 1200); }
+    } catch (e) { toast('Không sao chép được: ' + e.message); }
+}
+
+function addChatMessage(role, text) {
+    const box = document.getElementById('chat-messages');
+    if (!box) return;
+    const row = document.createElement('div');
+    if (role === 'user') {
+        row.className = 'chat-msg flex justify-end px-4 py-2';
+        row.innerHTML = `<div class="chat-msg-body max-w-[80%]">
+            <div class="chat-msg-actions"><button onclick="copyCode(this, this.closest('.chat-msg-body').innerText)" title="Sao chép tin nhắn">Sao chép</button></div>
+            <div class="bg-slate-100 rounded-2xl px-3.5 py-2 text-[13px] whitespace-pre-wrap">${escapeHtml(text)}</div>
+          </div>`;
+    } else {
+        row.className = 'chat-msg flex gap-3 px-4 py-2';
+        const cfg = AI_PROVIDERS[currentModelConfig.provider];
+        row.innerHTML = `<div class="ai-avatar w-7 h-7 rounded-full ${cfg.color} text-white grid place-items-center shrink-0 text-[10px] font-bold">${cfg.icon}</div>
+            <div class="chat-msg-body text-[13px] leading-relaxed max-w-full min-w-0">
+              <div class="chat-msg-actions"><button onclick="copyCode(this, this.closest('.chat-msg-body').innerText)" title="Sao chép tin nhắn">Sao chép</button></div>
+              <div class="chat-md">${renderMd(text)}</div>
+            </div>`;
+    }
+    box.appendChild(row);
+    box.scrollTop = box.scrollHeight;
+    // lưu vào session
+    try {
+        const s = currentSession();
+        s.messages.push({ role, text });
+        if (role === 'user' && s.messages.filter(m => m.role === 'user').length === 1) {
+            s.title = text.slice(0, 42);
+            setText('chat-title', s.title);
+            renderHistory();
+        }
+    } catch (e) { /* ignore */ }
+}
+
+async function sendChat(text) {
+    const input = document.getElementById('chat-input');
+    const msg = (text ?? input.value).trim();
+    if (!msg) return;
+    input.value = '';
+    addChatMessage('user', msg);
+    const typing = document.createElement('div');
+    typing.className = 'px-4 py-2 text-[12px] text-slate-400';
+    typing.textContent = `${AI_PROVIDERS[currentModelConfig.provider].name} (${currentModelConfig.model}) đang trả lời…`;
+    document.getElementById('chat-messages').appendChild(typing);
+    try {
+        const reply = await Chat.ask(msg);
+        typing.remove();
+        if (Chat._lastLang === 'en') toast('Prompt bị chặn → đã tự gửi lại bằng tiếng Anh');
+        addChatMessage('assistant', reply);
+        // tự áp nếu AI trả JSON hợp lệ (rig/animation) → giảm thao tác tay
+        const blocks = [...String(reply).matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map(m => m[1]);
+        if (!blocks.length) return;
+        let applied = 0, lastErr = null;
+        for (const b of blocks) {
+            let js; try { js = parseAIJSON(b); } catch (e) { lastErr = e; continue; }
+            if (!js || (!js.bones && !js.clips)) continue;
+            try { applyAIJSON(js); applied++; } catch (e) { lastErr = e; }
+        }
+        if (applied) toast(`AI đã sinh dữ liệu — tự áp ${applied} khối vào engine`);
+        else if (lastErr) addChatMessage('assistant', `⚠️ Không áp được JSON: ${lastErr.message}`);
+    } catch (e) {
+        typing.remove();
+        addChatMessage('assistant', `⚠️ **Lỗi**: ${e.message}`);
+    }
+}
+
+function applyAICode(btn) {
+    const pre = btn.closest('div').parentElement.querySelector('pre');
+    if (!pre) { toast('Không tìm thấy khối code'); return; }
+    try {
+        const json = parseAIJSON(pre.textContent);
+        applyAIJSON(json);
+    } catch (e) {
+        toast('JSON lỗi: ' + e.message);
+        setStatus('JSON AI không hợp lệ — xem chi tiết trong chat');
+    }
+}
+
+/* =====================================================================
+   TẠO NHÂN VẬT BẰNG AI (gpt-6-astra sinh SVG → rig → animation)
+   --------------------------------------------------------------------- */
+const SVG_GEN_PROMPT = `Draw ONE simple SVG of a cartoon knight, full body, front view. Output ONLY the SVG in a \`\`\`svg block.
+
+RULES:
+- viewBox="0 0 200 300", character centered, feet at the bottom.
+- ONLY these top-level groups (exact ids, no nesting): head, torso, hips, arm_upper_L, arm_lower_L, hand_L, arm_upper_R, arm_lower_R, hand_R, leg_upper_L, leg_lower_L, foot_L, leg_upper_R, leg_lower_R, foot_R, sword
+- Each group = 1-2 simple shapes (rect/ellipse/path), flat fill + stroke, no gradients/filters/text.
+- KEEP IT SHORT: max ~60 lines of SVG. Do not add comments.`;
+
+/** gọi sinh SVG với retry khi gateway 504/timeout (gpt-6-astra sinh dài hay bị cắt) */
+async function aiGenerateSVG() {
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            setStatus(`AI đang vẽ SVG (lần ${attempt}/3)…`);
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider: 'agentrouter',
+                    // dùng gpt-5.6-sol: gpt-6-astra trên AgentRouter đốt hết token vào reasoning
+                    // (reasoning_tokens = max_output_tokens, status=incomplete, output rỗng)
+                    model: attempt === 1 ? 'gpt-5.6-sol' : 'gpt-6.1-sol',
+                    allowedModels: true,
+                    reasoningEffort: 'minimal',
+                    messages: [{ role: 'user', content: SVG_GEN_PROMPT }]
+                })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                const msg = String(err.error || ('HTTP ' + res.status));
+                if (res.status === 504 || /timeout|Gateway/i.test(msg)) { lastErr = new Error('gateway timeout'); await new Promise(r => setTimeout(r, 2000)); continue; }
+                throw new Error(msg);
+            }
+            const data = await res.json();
+            const text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+            const m = text.match(/```(?:svg|xml)?\s*([\s\S]*?)```/);
+            const svg = (m ? m[1] : text).trim();
+            if (!/<svg/i.test(svg)) { lastErr = new Error('AI không trả về SVG'); continue; }
+            return svg;
+        } catch (e) {
+            lastErr = e;
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+    throw new Error((lastErr && lastErr.message) || 'không sinh được SVG');
+}
+
+/* ---------------- ẢNH RASTER: /v1/images/generations ---------------- */
+async function aiGenerateRasterImage() {
+    const btn = document.getElementById('btn-ai-image');
+    const prompt = (document.getElementById('chat-input').value || '').trim() ||
+        'A cute cartoon knight character, full body, front view, white background, flat colors';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Đang tạo ảnh…'; }
+    // thử lần lượt các provider có model ảnh (xKiro key này không có model ảnh)
+    const order = ['apinex', 'agentrouter'];
+    setStatus('Đang gọi images/generations…');
+    try {
+        let data = null, lastErr = null;
+        for (const provider of order) {
+            const res = await fetch('/api/image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider, prompt, size: '1024x1024', n: 1 })
+            });
+            const d = await res.json().catch(() => ({}));
+            if (res.ok && d.urls && d.urls.length) { data = d; break; }
+            lastErr = d.error || ('HTTP ' + res.status);
+            if (res.status === 503) continue;   // provider chưa có key → thử tiếp
+        }
+        if (!data) throw new Error(lastErr || 'Không provider nào tạo được ảnh');
+        const url = (data.urls || [])[0];
+        if (!url) throw new Error('Server không trả URL ảnh');
+        const promptShort = prompt.length > 44 ? prompt.slice(0, 44) + '…' : prompt;
+        const imgKey = ChatImages.register(url, { label: 'anh_ai', title: promptShort || 'ảnh AI' });
+        addChatMessage('assistant', `🖼 **Đã tạo ảnh** (${data.model || 'model ảnh'})\n\n` +
+            `[[img:${imgKey}]]\n\n` +
+            'Bấm ảnh để **mở rộng** (zoom, kéo, tải về) — hoặc dùng nút **Làm nhân vật** trong viewer để đưa ảnh vào viewport. ' +
+            'Muốn rig được từng bộ phận thì dùng **✨ Tạo ảnh AI** (AI vẽ bản SVG có part tách rời).');
+        setStatus('Ảnh AI: ' + url);
+        toast('Đã lưu ảnh vào generated/ — bấm ảnh trong chat để mở rộng');
+        return url;
+    } catch (e) {
+        addChatMessage('assistant', `⚠️ **Không tạo được ảnh**: ${e.message}\n\n` +
+            'Đặt key vào `.env` (`XKIRO_API_KEY`, `APINEX_API_KEY` hoặc `AGENTROUTER_API_KEY`) rồi khởi động lại `node dev_server.js`. ' +
+            'Nếu key đã có mà vẫn lỗi: tài khoản chưa được cấp model ảnh.');
+        setStatus('Lỗi tạo ảnh: ' + e.message.slice(0, 80));
+        return null;
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🖼 Ảnh (images/generations)'; }
+    }
+}
+
+async function aiCreateCharacter() {
+    if (typeof SvgCharacter === 'undefined') { toast('Chưa nạp svg_character.js'); return; }
+    const btn = document.getElementById('btn-ai-char');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Đang vẽ…'; }
+    addChatMessage('assistant', '🎨 **Đang tạo nhân vật bằng gpt-5.6-sol** — khoảng 30-90s, đợi mình nhé…');
+    try {
+        const svg = await aiGenerateSVG();
+        const svgKey = ChatImages.register(svgTextToDataUri(svg), { label: 'nhan_vat_ai', title: 'Nhân vật AI (SVG)', canRig: true });
+        addChatMessage('assistant', '✅ **Đã sinh ảnh SVG** — đang tách bộ phận + dựng rig…');
+        addChatMessage('assistant', `🎨 **Ảnh SVG AI vẽ** — bấm để mở rộng (zoom / tải / rig):\n\n[[img:${svgKey}]]`);
+        const { skel, count } = await SvgCharacter.load(svg, Engine.scene);
+        addChatMessage('assistant', `🦴 Rig xong: **${count} bộ phận · ${skel.ordered.length} bones**. Đang nhờ gpt-5.6-sol làm animation pro…`);
+        const clips = await aiGenerateClips(skel);
+        Engine.animation.loadClips(clips, true);
+        Engine.isPlaying = true;
+        togglePlayState(true);
+        const src = clips.__ai ? 'gpt-5.6-sol' : 'bộ clip pro có sẵn';
+        addChatMessage('assistant', `🎉 **Nhân vật AI đã sẵn sàng!** ${count} bộ phận · ${skel.ordered.length} bones.
+
+` +
+            `Clip (${src}): ` + clips.map(c => `**${c.name}** ${c.duration}s`).join(' · ') + '\n\nChọn clip ở timeline dưới viewport.');
+        setStatus(`AI rig: ${count} parts · ${skel.ordered.length} bones · ${clips.length} clips`);
+    } catch (e) {
+        addChatMessage('assistant', `⚠️ **Tạo nhân vật lỗi**: ${e.message}`);
+        setStatus('Lỗi tạo nhân vật AI: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '✨ Tạo ảnh AI'; }
+    }
+}
+
+/* ---------------- AI RIG + ANIMATION PRO (gpt-5.6-sol) ---------------- */
+const CLIP_PROMPT = (bones) => [
+    'You are a 2D skeletal animation expert (Spine style).',
+    'Rig bones (use ONLY these names): ' + bones.join(', ') + '.',
+    'Y axis points DOWN. rotation = degrees, positive = clockwise on screen.',
+    '',
+    'Output ONLY compact JSON, no prose:',
+    '{"clips":[{"id":"attack","name":"Slash Pro","duration":1.0,"tracks":[{"bone":"arm_upper_R","keys":[{"t":0,"rotation":0},{"t":0.28,"rotation":-75},{"t":0.5,"rotation":55},{"t":1.0,"rotation":0}]}]}]}',
+    '',
+    'Make exactly 2 clips:',
+    '1) id "idle", duration 2.4 — breathing sway (torso/head/arms/weapon).',
+    '2) id "attack", duration 1.0 — heavy sword slash with anticipation (wind-up back),',
+    '   fast strike, follow-through overshoot, settle to 0. Rotate hips + torso + head+ arm chain + weapon.',
+    '',
+    'Rules: every track starts t=0 rotation 0 and ends at duration rotation 0;',
+    '4-5 keys per track; keep the whole JSON under 1800 characters.'
+].join('\n');
+
+/** gọi gpt-5.6-sol sinh clip pro; nếu gateway cắt (status incomplete) thì dùng bộ PRO_CLIPS */
+async function aiGenerateClips(skel) {
+    const names = skel.ordered.map(b => b.name).filter(n => n !== 'root' && n !== 'neck');
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            setStatus(`gpt-5.6-sol đang làm animation (lần ${attempt}/2)…`);
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider: 'agentrouter',
+                    model: 'gpt-5.6-sol',
+                    allowedModels: true,
+                    reasoningEffort: 'minimal',
+                    maxOutputTokens: 16000,
+                    messages: [{ role: 'user', content: CLIP_PROMPT(names) }]
+                })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                const msg = String(err.error || ('HTTP ' + res.status));
+                if (/504|timeout|Gateway/i.test(msg)) continue;
+                throw new Error(msg);
+            }
+            const data = await res.json();
+            const text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+            const m = text.match(/\{[\s\S]*\}/);
+            if (!m) continue;
+            const obj = JSON.parse(m[0]);
+            const clips = sanitizeClips(obj.clips || []);
+            if (clips.length) {
+                clips.__ai = true;
+                addChatMessage('assistant', '🤖 gpt-5.6-sol đã trả clip: ' +
+                    clips.map(c => `${c.name} (${c.duration}s, ${c.tracks.length} tracks)`).join(', '));
+                return clips;
+            }
+        } catch (e) {
+            addChatMessage('assistant', `ℹ️ Model chưa trả được clip (${e.message}) — dùng bộ clip pro có sẵn.`);
+            break;
+        }
+    }
+    addChatMessage('assistant', 'ℹ️ AgentRouter cắt output của model (reasoning hết token) → dùng **bộ clip pro có sẵn** đã dựng theo đúng nguyên tắc anticipation → slash → follow-through → settle.');
+    return SVG_CLIPS(skel);
+}
+
+/** Bộ clip PRO cho rig SVG — dựng tay theo nguyên tắc animation chuyên nghiệp:
+    anticipation (lấy đà) → strike (1-2 frame) → follow-through/overshoot → settle.
+    Chạy được ngay cả khi AgentRouter cắt output của model. */
+function SVG_CLIPS(skel) {
+    const names = new Set(skel.ordered.map(b => b.name));
+    /* keys: [t, rotation, y] — y chỉ dùng cho hips khi cần dồn trọng lượng */
+    const T = (bone, keys) => ({ bone, keys: keys.map(k => ({ t: k[0], rotation: k[1], y: k[2] || 0 })) });
+    const clips = [
+        // 1) IDLE: thở nhẹ + lắc rất chậm, vũ khí trễ pha (overlapping action)
+        { id: 'svg_idle', name: 'Idle Pro', duration: 2.4, tracks: [
+            T('hips', [[0, 0, 0], [1.2, 0, -2.5], [2.4, 0, 0]]),
+            T('torso', [[0, 0], [0.6, 0.8], [1.2, 1.6], [1.8, 0.8], [2.4, 0]]),
+            T('head', [[0, -1], [0.7, 1.5], [1.4, 2.2], [2.4, -1]]),
+            T('arm_upper_L', [[0, 1.5], [1.2, 3.5], [2.4, 1.5]]),
+            T('arm_upper_R', [[0, -1.5], [1.2, -3.5], [2.4, -1.5]]),
+            T('arm_lower_L', [[0, -2], [1.35, -4], [2.4, -2]]),
+            T('arm_lower_R', [[0, -2], [1.35, -4], [2.4, -2]]),
+            T('weapon', [[0, -2], [1.45, 3], [2.4, -2]])
+        ]},
+        // 2) ATTACK PRO: heavy overhead slash
+        //    0.00–0.30 lấy đà (ngả ra sau) → 0.30–0.44 bổ xuống (nhanh) →
+        //    0.44–0.70 quá đà → 0.70–1.00 dừng lại
+        { id: 'svg_attack', name: 'Slash Pro', duration: 1.0, tracks: [
+            T('hips',        [[0, 0, 0], [0.30, 7, -3], [0.44, -6, 2], [0.70, -9, 1], [1.0, 0, 0]]),
+            T('torso',       [[0, 0], [0.30, 12], [0.44, -10], [0.70, -16], [1.0, 0]]),
+            T('head',        [[0, 0], [0.30, -7], [0.44, 6], [0.70, 9], [1.0, 0]]),
+            T('arm_upper_R', [[0, 0], [0.30, -85], [0.44, 60], [0.62, 72], [1.0, 0]]),
+            T('arm_lower_R', [[0, 0], [0.30, -32], [0.44, 22], [0.62, 30], [1.0, 0]]),
+            T('hand_R',      [[0, 0], [0.30, -12], [0.44, 10], [0.70, 14], [1.0, 0]]),
+            T('weapon',      [[0, 0], [0.30, -28], [0.44, 26], [0.70, 34], [1.0, 0]]),
+            T('arm_upper_L', [[0, 0], [0.30, 30], [0.44, -14], [0.70, -20], [1.0, 0]]),
+            T('leg_upper_L', [[0, 0], [0.30, 6], [0.44, -4], [1.0, 0]]),
+            T('leg_upper_R', [[0, 0], [0.30, -5], [0.44, 5], [1.0, 0]])
+        ]},
+        // 3) WALK: chu kỳ 2 bước, hông nhún theo nhịp
+        { id: 'svg_walk', name: 'Walk Pro', duration: 1.2, tracks: [
+            T('hips',        [[0, 0, 0], [0.3, 0, -5], [0.6, 0, 0], [0.9, 0, -5], [1.2, 0, 0]]),
+            T('leg_upper_L', [[0, 22], [0.6, -18], [1.2, 22]]),
+            T('leg_lower_L', [[0, -18], [0.6, 8], [1.2, -18]]),
+            T('foot_L',      [[0, 6], [0.6, -6], [1.2, 6]]),
+            T('leg_upper_R', [[0, -18], [0.6, 22], [1.2, -18]]),
+            T('leg_lower_R', [[0, 8], [0.6, -18], [1.2, 8]]),
+            T('foot_R',      [[0, -6], [0.6, 6], [1.2, -6]]),
+            T('arm_upper_L', [[0, -15], [0.6, 15], [1.2, -15]]),
+            T('arm_upper_R', [[0, 15], [0.6, -15], [1.2, 15]]),
+            T('torso',       [[0, 2], [0.6, -2], [1.2, 2]])
+        ]}
+    ];
+    // lọc track trùng tên bone thật (rig SVG có thể thiếu part)
+    return clips.map(c => ({ ...c, tracks: c.tracks.filter(t => names.has(t.bone)) })).filter(c => c.tracks.length);
+}
+
+/** JSON từ AI có thể bọc ```json, lẫn text, hoặc bị cắt — lấy block {...} lớn nhất */
+function parseAIJSON(raw) {
+    const txt = String(raw).replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+    let lastErr;
+    try { return JSON.parse(txt); } catch (e) { lastErr = e; /* thử block con */ }
+    const s = txt.indexOf('{'), e = txt.lastIndexOf('}');
+    if (s >= 0 && e > s) return JSON.parse(txt.slice(s, e + 1));
+    throw lastErr || new Error('JSON không hợp lệ: ' + txt.slice(0, 100));
+}
+
+function applyAIJSON(json) {
+    const msgs = [];
+    // Nếu đang hiển thị ảnh import (scene.spine = null) thì dọn ảnh trước,
+    // nếu không rig/clip của AI sẽ không có skeleton để áp.
+    if (Engine.scene && !Engine.scene.spine) {
+        clearCustomCharacter(Engine.scene);
+        if (!Engine.scene.rigLayer) {
+            Engine.scene.rigLayer = new PIXI.Container();
+            Engine.scene.rigLayer.label = 'spine_layer';
+            Engine.scene.world.addChild(Engine.scene.rigLayer);
+        }
+        msgs.push('đã gỡ ảnh import để dựng rig');
+    }
+    if (Array.isArray(json.bones) && json.bones.length) {
+        const defs = json.bones.filter(b => b && b.name).map(b => ({
+            name: b.name, parent: b.parent || null,
+            x: +b.x || 0, y: +b.y || 0,
+            rotation: +b.rotation || 0, length: +b.length || 20
+        }));
+        applyAIRig(json.bones, defs);
+        msgs.push(`rig ${defs.length} bones · ${Engine.scene.spine.ordered.filter(b => b.sprite).length} attachments`);
+    }
+    if (Array.isArray(json.clips) && json.clips.length) {
+        // clip cần skeleton: nếu chưa có (vừa gỡ ảnh) thì dựng rig chuẩn trước
+        if (!Engine.scene.spine) {
+            SpineRig.build(Engine.scene, false);
+            msgs.push('dựng rig chuẩn để chạy clip');
+        }
+        const clips = sanitizeClips(json.clips);
+        if (clips.length) {
+            // giữ clip mặc định, thêm clip AI; clip AI trùng id thì ghi đè
+            const map = new Map(Engine.animation.clips.map(c => [c.id, c]));
+            clips.forEach(c => map.set(c.id, c));
+            Engine.animation.loadClips([...map.values()], true);
+            Engine.playTime = 0;
+            Engine.animation.setCurrent(clips[clips.length - 1].id);
+            const sel = document.getElementById('select-clip');
+            if (sel) sel.value = clips[clips.length - 1].id;
+            togglePlayState(true);
+            msgs.push(clips.map(c => `clip "${c.name}" ${c.duration}s × ${c.tracks.length} tracks`).join(', '));
+        } else {
+            msgs.push('clips bị loại (tên bone không khớp skeleton hiện tại)');
+        }
+    }
+    if (!msgs.length) { toast('JSON không có bones/clips hợp lệ'); return; }
+    setStatus('AI → engine: ' + msgs.join(' · '));
+    addChatMessage('assistant', `✅ **Đã áp vào engine**: ${msgs.join(' · ')}`);
+    renderSpineBonesList();
+    renderDopesheet();
+    updateClipHUD();
+}
+
+/** áp TẤT CẢ khối JSON có trong khung chat (rig trước, motion sau) */
+function applyAllAICode() {
+    const pres = [...document.querySelectorAll('#chat-messages pre')];
+    if (!pres.length) { toast('Không tìm thấy JSON trong chat'); return; }
+    let ok = 0;
+    pres.forEach(pre => {
+        try { applyAIJSON(parseAIJSON(pre.textContent)); ok++; } catch (e) { /* bỏ block lỗi */ }
+    });
+    if (!ok) toast('Không có JSON hợp lệ');
+}
+
+/* tên part AI có thể viết khác | map về key atlas đúng */
+const PART_ALIAS = {
+    upper_arm: 'arm_up_L', lower_arm: 'arm_low_L', hand: 'hand_L', fist: 'fist_L',
+    upper_leg: 'leg_up_L', lower_leg: 'leg_low_L', foot: 'foot_L',
+    hair: 'hair_back', shirt: 'torso', pants: 'hip',
+    // tên vũ khí hay được AI dùng
+    weapon: 'sword', blade: 'sword', katana: 'sword', dao: 'sword', sword_right: 'sword',
+    shield: 'shield_round'
+};
+/* part chỉ được gắn vào bone có chủ đích (tránh AI gán nhầm vũ khí vào tay)
+   cùng một part không được dùng cho 2 bone */
+const PART_PRIMARY = { sword: 'weapon', sword_blue: 'weapon', shield_round: 'weapon', shield_crest: 'weapon' };
+
+function normalizeKey(k) { return String(k || '').toLowerCase().replace(/^bone[_\s]?/, '').trim(); }
+
+/** dựng lại rig từ JSON của AI: giữ dir/wave cũ + gắn part theo tên bone | part | alias */
+function applyAIRig(rawBones, defs) {
+    const template = defs.map(d => {
+        const old = SpineRig.TEMPLATE.find(t => t.name === d.name) || {};
+        const raw = rawBones.find(b => b && b.name === d.name) || {};
+        // bone trùng tên part là ưu tiên số 1 (head→head, torso→torso...)
+        const candidates = [old.part, raw.part, raw.name, PART_ALIAS[normalizeKey(raw.part)], PART_ALIAS[normalizeKey(raw.name)]];
+        let part = null;
+        for (const c of candidates) {
+            if (!c || !ATLAS_PARTS[c]) continue;
+            const owner = PART_PRIMARY[c];
+            if (owner && owner !== d.name) continue;
+            part = c; break;
+        }
+        const wave = old.wave || (ATLAS_PARTS[part] || {}).wave || undefined;
+        return {
+            name: d.name, parent: d.parent, x: d.x, y: d.y, rot: d.rotation, len: d.length,
+            part, wave, dir: old.dir
+        };
+    });
+    // part chưa được bone nào dùng → gắn vào bone gần nhất theo tên/alias
+    const used = new Set(template.filter(t => t.part).map(t => t.part));
+    Object.keys(ATLAS_PARTS).forEach(key => {
+        if (used.has(key)) return;
+        const owner = PART_PRIMARY[key];
+        if (owner && !template.some(t => t.name === owner && !t.part)) return;
+        const target = (owner && template.find(t => t.name === owner && !t.part)) ||
+            template.find(t => t.name === key) ||
+            template.find(t => PART_ALIAS[normalizeKey(key)] === t.part) ||
+            template.find(t => t.part === key);
+        if (target && !target.part) {
+            target.part = key;
+            target.wave = ATLAS_PARTS[key].wave || target.wave;
+            used.add(key);
+        }
+    });
+    SpineRig.TEMPLATE = template;
+    // dọn ảnh import (nếu có) trước khi dựng rig AI, nếu không ảnh sẽ che rig
+    clearCustomCharacter(Engine.scene);
+    SpineRig.build(Engine.scene, false);
+}
+
+function sanitizeClips(raw) {
+    const names = new Set(Engine.scene.spine ? Engine.scene.spine.ordered.map(b => b.name) : []);
+    const num = (v, d) => { const n = parseFloat(v); return isFinite(n) ? n : d; };
+    raw = (Array.isArray(raw) ? raw : []).slice();
+    // clip AI không ghi duration → suy ra từ key muộn nhất
+    raw.forEach(c => {
+        if (c && !(parseFloat(c.duration) > 0)) {
+            let mx = 0;
+            (c.tracks || []).forEach(t => (t.keys || []).forEach(k => { const v = parseFloat(k && k.t); if (isFinite(v) && v > mx) mx = v; }));
+            c.duration = mx > 0 ? mx : 1;
+        }
+    });
+    return raw.map((c, i) => {
+        const duration = Math.max(0.2, num(c.duration, 1));
+        const tracks = (c.tracks || [])
+            .filter(t => t && names.has(t.bone))
+            .map(t => {
+                const keys = (t.keys || [])
+                    .filter(k => k && isFinite(parseFloat(k.t)))
+                    .map(k => ({ t: Math.min(duration, Math.max(0, num(k.t, 0))), x: num(k.x, 0), y: num(k.y, 0), rotation: num(k.rotation, 0), scale: num(k.scale, 1) }))
+                    .sort((a, b) => a.t - b.t);
+                // clip one-shot hay thiếu key cuối → chèn về 0 tại duration để loop sạch
+                if (keys.length && keys[keys.length - 1].t < duration - 0.001) {
+                    keys.push({ t: duration, x: 0, y: 0, rotation: 0, scale: 1 });
+                }
+                return { bone: t.bone, keys };
+            }).filter(t => t.keys.length);
+        return {
+            id: (c.id || ('ai_' + i)).toString().replace(/[^\w-]/g, '_'),
+            name: c.name || ('AI ' + (i + 1)),
+            duration, tracks
+        };
+    }).filter(c => c.tracks.length);
+}
+
+/* ---------------------------------------------------------------------
+   10. SIDEBAR / SESSION
+   --------------------------------------------------------------------- */
+const sessions = [];
+let activeSession = null;
+
+function renderHistory() {
+    const el = document.getElementById('chat-history');
+    if (!el) return;
+    el.innerHTML = sessions.map((s, i) =>
+        `<button onclick="loadSession(${i})" class="w-full text-left px-2 py-1.5 rounded-lg truncate ${i === activeSession ? 'bg-slate-200/80 font-medium' : 'hover:bg-slate-200/50'}">${escapeHtml(s.title)}</button>`
+    ).join('') || '<div class="px-2 text-[11px] text-slate-400">Chưa có hội thoại</div>';
+}
+
+function loadSession(i) {
+    const s = sessions[i]; if (!s) return;
+    activeSession = i;
+    setText('chat-title', s.title);
+    const box = document.getElementById('chat-messages');
+    box.innerHTML = '';
+    s.messages.forEach(m => {
+        const row = document.createElement('div');
+        if (m.role === 'user') {
+            row.className = 'chat-msg flex justify-end px-4 py-2';
+            row.innerHTML = `<div class="chat-msg-body max-w-[80%]">
+                <div class="chat-msg-actions"><button onclick="copyCode(this, this.closest('.chat-msg-body').innerText)" title="Sao chép tin nhắn">Sao chép</button></div>
+                <div class="bg-slate-100 rounded-2xl px-3.5 py-2 text-[13px] whitespace-pre-wrap">${escapeHtml(m.text)}</div>
+              </div>`;
+        } else {
+            row.className = 'chat-msg flex gap-3 px-4 py-2';
+            const cfg = AI_PROVIDERS[currentModelConfig.provider];
+            row.innerHTML = `<div class="ai-avatar w-7 h-7 rounded-full ${cfg.color} text-white grid place-items-center shrink-0 text-[10px] font-bold">${cfg.icon}</div>
+                <div class="chat-msg-body text-[13px] leading-relaxed min-w-0">
+                      <div class="chat-msg-actions"><button onclick="copyCode(this, this.closest('.chat-msg-body').innerText)" title="Sao chép tin nhắn">Sao chép</button></div>
+                      <div class="chat-md">${renderMd(m.text)}</div>
+                </div>`;
+        }
+        box.appendChild(row);
+    });
+    renderHistory();
+}
+
+function newChat() {
+    sessions.unshift({ title: 'Cuộc trò chuyện mới', messages: [] });
+    loadSession(0);
+    Chat.history = [];
+}
+
+/** phím tắt: Esc đóng modal cài đặt key */
+document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    const m = document.getElementById('api-modal');
+    if (m && m.style.display !== 'none') closeKeyModal();
+});
+
+function currentSession() {
+    if (activeSession === null || !sessions[activeSession]) {
+        sessions.unshift({ title: 'Cuộc trò chuyện mới', messages: [] });
+        activeSession = 0;
+    }
+    return sessions[activeSession];
+}
+
+function quickPrompt(t) { document.getElementById('chat-input').value = t; sendChat(); }
+
+/* ---------------- AUTO CHỌN MODEL CHO RIG + ANIMATION --------------
+   "DeepSeek Rig + Animation" không còn ép cứng DeepSeek: nó TỰ chọn model đầu tiên
+   thật sự gọi được (key trong localStorage HOẶC key trong .env qua /api/status),
+   theo thứ tự ưu tiên bên dưới, rồi tự áp JSON rig + clip vào engine. Nếu model đó
+   lỗi thì tự nhảy sang model dự kiến kế tiếp — không cần người dùng chọn tay. */
+const RIG_MODEL_PREFERENCE = [
+    { provider: 'deepseek',    model: 'deepseek-chat' },
+    { provider: 'deepseek',    model: 'deepseek-reasoner' },
+    { provider: 'agentrouter', model: 'gpt-5.6-sol' },
+    { provider: 'agentrouter', model: 'gpt-6.1-sol' },
+    { provider: 'kimi',        model: 'kimi-k2-0905' },
+    { provider: 'kimi',        model: 'kimi-latest' },
+    { provider: 'openrouter',  model: 'deepseek/deepseek-chat' },
+    { provider: 'openrouter',  model: 'openai/gpt-4o' },
+    { provider: 'openrouter',  model: 'openrouter/auto' },
+    { provider: 'apinex',      model: 'free/deepseek-v4.1-flash' },
+    { provider: 'apinex',      model: 'free/qwen-3.8-max' },
+    { provider: 'openai',      model: 'gpt-4o' },
+    { provider: 'openai',      model: 'gpt-4o-mini' },
+    { provider: 'xkiro',       model: 'cohere/command-r-08-2024' },
+    { provider: 'glm',         model: 'glm-4' },
+    { provider: 'gemini',      model: 'gemini-pro' }
+];
+
+/** provider này gọi được chưa? (key trong browser khớp prefix, hoặc key ở .env qua server) */
+function providerReady(provider) {
+    const cfg = AI_PROVIDERS[provider];
+    if (!cfg) return false;
+    const key = getAPIKey(provider);
+    const prefixOk = cfg.keyPrefix ? key.startsWith(cfg.keyPrefix) : !!key;
+    return prefixOk || serverHasKey(provider);
+}
+
+/** danh sách model khả dụng theo đúng thứ tự ưu tiên (rỗng nếu chưa có key nào) */
+function autoModelCandidates() {
+    const list = RIG_MODEL_PREFERENCE.filter(c => providerReady(c.provider));
+    // provider lạ có key trong .env nhưng không nằm trong bảng ưu tiên → vẫn dùng model mặc định của nó
+    Object.keys(AI_PROVIDERS).forEach(p => {
+        if (!providerReady(p) || list.some(c => c.provider === p)) return;
+        const m = (AI_PROVIDERS[p].models || [])[0];
+        if (m) list.push({ provider: p, model: m });
+    });
+    return list;
+}
+
+/** model tốt nhất đang gọi được, hoặc null */
+function autoPickRigModel() {
+    return autoModelCandidates()[0] || null;
+}
+
+/** prompt chuẩn: rig lại + 2 clip pro (dùng cho mọi model) */
+const PRO_RIG_PROMPT = 'Dùng skeleton hiện tại, sinh lại rig chuẩn chỉnh (thứ tự bone, anchor gắn part đúng giải phẫu) VÀ tạo 2 clip pro: ' +
+    'idle thở nhẹ và vung đao combat theo nguyên tắc anticipation → slash → follow-through → settle, có tóc và vạt áo phụ diễn. ' +
+    'Trả về MỘT khối JSON có cả bones và clips.';
+
+/** gửi 1 prompt và tự áp mọi khối JSON rig/animation trả về; trả về số khối đã áp */
+async function askAndApply(prompt) {
+    const reply = await Chat.ask(prompt);
+    addChatMessage('assistant', reply);
+    const blocks = [...String(reply).matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map(m => m[1]);
+    let applied = 0;
+    for (const b of blocks) {
+        let js; try { js = parseAIJSON(b); } catch (e) { continue; }
+        if (!js || (!js.bones && !js.clips)) continue;
+        try { applyAIJSON(js); applied++; } catch (e) { /* khối lỗi → bỏ qua */ }
+    }
+    if (!applied) throw new Error('model không trả JSON rig/animation hợp lệ');
+    return applied;
+}
+
+/** Nút sidebar: TỰ chọn model đang gọi được → rig + animation (tự thử model kế tiếp nếu lỗi) */
+async function deepseekProRig() {
+    const cands = autoModelCandidates();
+    if (!cands.length) {
+        openKeyModal();
+        toast('Chưa có model nào gọi được — nhập 1 API key (hoặc đặt key trong .env rồi chạy dev_server.js)');
+        return;
+    }
+    const btn = document.querySelector('button[onclick="deepseekProRig()"]');
+    if (btn) { btn.disabled = true; }
+    const typing = document.createElement('div');
+    typing.className = 'px-4 py-2 text-[12px] text-slate-400';
+    document.getElementById('chat-messages').appendChild(typing);
+    const errs = [];
+    try {
+        for (let i = 0; i < cands.length; i++) {
+            const c = cands[i];
+            changeModel(`${c.provider}:${c.model}`);
+            const cfg = AI_PROVIDERS[c.provider];
+            const via = serverHasKey(c.provider) ? 'key .env' : 'key trình duyệt';
+            typing.textContent = `AUTO ${i + 1}/${cands.length}: ${cfg.name} · ${c.model} (${via}) đang rig + animation...`;
+            try {
+                await askAndApply(PRO_RIG_PROMPT);
+                typing.remove();
+                toast(`AUTO: ${cfg.name} · ${c.model} đã rig + animation`);
+                setStatus(`AUTO pro rig: ${cfg.name} · ${c.model}`);
+                return `${c.provider}:${c.model}`;
+            } catch (e) {
+                errs.push(`${c.provider}:${c.model} → ${e.message}`);
+                addChatMessage('assistant', `⚠️ \`${c.provider}:${c.model}\` không dùng được (${e.message}) — tự chuyển model khác...`);
+            }
+        }
+        typing.remove();
+        addChatMessage('assistant', '**AUTO đã thử hết model gọi được nhưng không model nào trả rig/animation hợp lệ:**\n\n' +
+            errs.map(e => '- ' + e).join('\n'));
+        return null;
+    } finally {
+        typing.remove();
+        if (btn) { btn.disabled = false; }
+    }
+}
+
+// tiện debug: chọn nhanh model gọi được (thay cho việc hard-code DeepSeek)
+function fallbackModelConfig() {
+    const pick = autoPickRigModel();
+    if (!pick) { openKeyModal(); toast('Chưa có model nào gọi được — nhập API key'); return; }
+    changeModel(`${pick.provider}:${pick.model}`);
+    toast(`Model gọi được: ${pick.provider} · ${pick.model}`);
+}
+function toggleSidebar() { document.getElementById('sidebar').classList.toggle('hidden'); }
+
+/* ---------------------------------------------------------------------
+   11. API KEY (lưu localStorage, không cần đăng nhập)
+   --------------------------------------------------------------------- */
+// Cấu hình các provider AI
+const AI_PROVIDERS = {
+    openai: {
+        name: 'OpenAI (ChatGPT)',
+        icon: '🤖',
+        color: 'bg-green-500',
+        apiEndpoint: 'https://api.openai.com/v1/chat/completions',
+        keyPrefix: 'sk-',
+        models: ['gpt-4o-mini', 'gpt-4o']
+    },
+    deepseek: {
+        name: 'DeepSeek',
+        icon: '🔮',
+        color: 'bg-purple-500',
+        get apiEndpoint() {
+            // cho phép đổi base URL (proxy nội bộ / endpoint tương thích OpenAI)
+            const custom = (localStorage.getItem('pixi_deepseek_base') || '').trim();
+            return custom || 'https://api.deepseek.com/v1/chat/completions';
+        },
+        keyPrefix: 'sk-',
+        models: ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner']
+    },
+    gemini: {
+        name: 'Google Gemini',
+        icon: '⭐',
+        color: 'bg-blue-500',
+        apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta',
+        keyPrefix: 'AIzaSy',
+        models: ['gemini-pro', 'gemini-ultra']
+    },
+    glm: {
+        name: 'Zhipu GLM',
+        icon: '🧠',
+        color: 'bg-indigo-500',
+        apiEndpoint: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+        keyPrefix: '',
+        models: ['glm-4', 'glm-3-turbo']
+    },
+    // AgentRouter: một key dùng cho nhiều model. Chỉ nhận client "đã đăng ký" qua Responses API
+    // (gọi /chat/completions → 401 "unauthorized client detected")
+    agentrouter: {
+        name: 'AgentRouter',
+        icon: '🛰️',
+        color: 'bg-cyan-600',
+        get apiEndpoint() {
+            const custom = (localStorage.getItem('pixi_agentrouter_base') || '').trim();
+            return (custom || 'https://agentrouter.org/v1') + '/responses';
+        },
+        keyPrefix: 'sk-',
+        models: ['gpt-5.6-sol', 'gpt-6-astra', 'gpt-6.1-sol']
+    },
+    /* xKiro — OpenAI-compatible, model id dạng "vendor/model" */
+    xkiro: {
+        name: 'xKiro',
+        icon: '🌐',
+        color: 'bg-teal-600',
+        get apiEndpoint() {
+            const custom = (localStorage.getItem('pixi_xkiro_base') || '').trim();
+            return (custom || 'https://api.xkiro.com/v1') + '/chat/completions';
+        },
+        keyPrefix: '',
+        models: ['mistralai/ministral-3b', 'cohere/command-r-08-2024']
+    },
+    /* Moonshot Kimi — OpenAI-compatible API */
+    kimi: {
+        name: 'Moonshot AI (Kimi)',
+        icon: '🌙',
+        color: 'bg-orange-500',
+        get apiEndpoint() {
+            const custom = (localStorage.getItem('pixi_kimi_base') || '').trim();
+            return custom || 'https://api.moonshot.cn/v1/chat/completions';
+        },
+        keyPrefix: 'sk-',
+        models: ['kimi-k2-0905', 'kimi-latest']
+    },
+    /* OpenRouter — OpenAI-compatible, aggregate multiple models */
+    openrouter: {
+        name: 'OpenRouter',
+        icon: '🚀',
+        color: 'bg-purple-700',
+        get apiEndpoint() {
+            const custom = (localStorage.getItem('pixi_openrouter_base') || '').trim();
+            return (custom || 'https://openrouter.ai/api/v1') + '/chat/completions';
+        },
+        keyPrefix: 'sk-',
+        models: ['openai/gpt-4o', 'openai/gpt-4o-mini', 'openai/gpt-4o-2024-11-20',
+                 'anthropic/claude-3.5-sonnet', 'google/gemini-2.0-flash-001',
+                 'mistralai/mistral-large', 'meta-llama/llama-3.3-70b-instruct',
+                 'deepseek/deepseek-chat', 'qwen/qwen-2.5-72b-instruct',
+                 'openrouter/auto']
+    },
+    /* APInex — OpenAI-compatible (api.apinex.bond/v1) */
+    apinex: {
+        name: 'APInex',
+        icon: '🎨',
+        color: 'bg-rose-600',
+        get apiEndpoint() {
+            const custom = (localStorage.getItem('pixi_apinex_base') || '').trim();
+            return (custom || 'https://api.apinex.bond/v1') + '/chat/completions';
+        },
+        keyPrefix: '',
+        models: ['free/qwen-3.8-max', 'free/deepseek-v4.1-flash', 'free/gemini-3.8-flash',
+                 'free/gpt-6-luna', 'free/kimi-k3', 'free/glm-5.3',
+                 'grok-imagine-2', 'gemini-3.1-flash-image']
+    }
+};
+
+// Lấy current model và provider
+let currentModelConfig = {
+    provider: 'openai',
+    model: 'gpt-4o-mini',
+    fullId: 'openai:gpt-4o-mini'
+};
+
+function getAPIKey(provider) {
+    return (localStorage.getItem(`pixi_${provider}_key`) || '').trim();
+}
+
+/* trạng thái proxy server (key trong .env) — chỉ khi chạy qua dev_server.js */
+const ServerStatus = { provider: null, ready: false, checked: false };
+async function checkServerStatus() {
+    if (!/^https?:/.test(location.protocol)) { ServerStatus.checked = true; return ServerStatus; }
+    try {
+        const r = await fetch('/api/status');
+        if (!r.ok) throw 0;
+        ServerStatus.provider = await r.json();
+        ServerStatus.checked = true;
+        updateKeyBadge();
+    } catch (e) { ServerStatus.checked = true; }
+    return ServerStatus;
+}
+function serverHasKey(provider) {
+    return !!(ServerStatus.provider && ServerStatus.provider[provider] && ServerStatus.provider[provider].ready);
+}
+
+function hasAPIKey() {
+    const key = getAPIKey(currentModelConfig.provider);
+    const providerCfg = AI_PROVIDERS[currentModelConfig.provider];
+    return key.startsWith(providerCfg.keyPrefix) || serverHasKey(currentModelConfig.provider);
+}
+
+function openKeyModal() {
+    const el = document.getElementById('api-modal');
+    if (el) el.style.display = 'flex';
+    
+    // Load các keys đã lưu
+    ['openai', 'deepseek', 'gemini', 'glm', 'agentrouter', 'xkiro', 'apinex', 'kimi', 'openrouter'].forEach(provider => {
+        const input = document.getElementById(`input-${provider}-key`);
+        if (input) input.value = getAPIKey(provider);
+    });
+    const arBase = document.getElementById('input-agentrouter-base');
+    if (arBase) arBase.value = localStorage.getItem('pixi_agentrouter_base') || '';
+    const dsBase = document.getElementById('input-deepseek-base');
+    if (dsBase) dsBase.value = localStorage.getItem('pixi_deepseek_base') || '';
+    const kimiBase = document.getElementById('input-kimi-base');
+    if (kimiBase) kimiBase.value = localStorage.getItem('pixi_kimi_base') || '';
+    const orBase = document.getElementById('input-openrouter-base');
+    if (orBase) orBase.value = localStorage.getItem('pixi_openrouter_base') || '';
+}
+
+function closeKeyModal() {
+    const el = document.getElementById('api-modal');
+    if (el) el.style.display = 'none';
+}
+
+function saveAllKeys() {
+    // Lưu tất cả keys
+    ['openai', 'deepseek', 'gemini', 'glm', 'agentrouter', 'xkiro', 'apinex', 'kimi', 'openrouter'].forEach(provider => {
+        const input = document.getElementById(`input-${provider}-key`);
+        if (input) {
+            const value = input.value.trim();
+            if (value) {
+                localStorage.setItem(`pixi_${provider}_key`, value);
+            }
+        }
+    });
+    const arBase = document.getElementById('input-agentrouter-base');
+    if (arBase) {
+        const v = arBase.value.trim();
+        if (v) localStorage.setItem('pixi_agentrouter_base', v); else localStorage.removeItem('pixi_agentrouter_base');
+    }
+    
+    // DeepSeek base URL tuỳ chọn
+    const dsBase = document.getElementById('input-deepseek-base');
+    if (dsBase) {
+        const v = dsBase.value.trim();
+        if (v) localStorage.setItem('pixi_deepseek_base', v); else localStorage.removeItem('pixi_deepseek_base');
+    }
+    
+    // Kimi base URL tuỳ chọn
+    const kimiBase = document.getElementById('input-kimi-base');
+    if (kimiBase) {
+        const v = kimiBase.value.trim();
+        if (v) localStorage.setItem('pixi_kimi_base', v); else localStorage.removeItem('pixi_kimi_base');
+    }
+
+    // OpenRouter base URL tuỳ chọn
+    const orBase = document.getElementById('input-openrouter-base');
+    if (orBase) {
+        const v = orBase.value.trim();
+        if (v) localStorage.setItem('pixi_openrouter_base', v); else localStorage.removeItem('pixi_openrouter_base');
+    }
+
+    updateKeyBadge();
+    updateModelBadge();
+    closeKeyModal();
+    toast('Đã lưu tất cả API keys');
+}
+
+function clearAllKeys() {
+    ['openai', 'deepseek', 'gemini', 'glm', 'agentrouter', 'xkiro', 'apinex', 'kimi', 'openrouter'].forEach(provider => {
+        localStorage.removeItem(`pixi_${provider}_key`);
+        const input = document.getElementById(`input-${provider}-key`);
+        if (input) input.value = '';
+    });
+    localStorage.removeItem('pixi_agentrouter_base');
+    const arBase = document.getElementById('input-agentrouter-base');
+    if (arBase) arBase.value = '';
+    localStorage.removeItem('pixi_deepseek_base');
+    const dsBase = document.getElementById('input-deepseek-base');
+    if (dsBase) dsBase.value = '';
+    localStorage.removeItem('pixi_kimi_base');
+    const kimiBase = document.getElementById('input-kimi-base');
+    if (kimiBase) kimiBase.value = '';
+    localStorage.removeItem('pixi_openrouter_base');
+    const orBase = document.getElementById('input-openrouter-base');
+    if (orBase) orBase.value = '';
+    
+    updateKeyBadge();
+    closeKeyModal();
+    toast('Đã xoá tất cả API keys');
+}
+
+function changeModel(fullModelId) {
+    const [provider, model] = fullModelId.split(':');
+    currentModelConfig = {
+        provider,
+        model,
+        fullId: fullModelId
+    };
+    
+    // Lưu vào localStorage
+    localStorage.setItem('pixi_current_model', fullModelId);
+    
+    updateKeyBadge();
+    updateModelBadge();
+    toast(`Đã chuyển sang model: ${AI_PROVIDERS[provider].name} - ${model}`);
+}
+
+function updateModelBadge() {
+    const providerCfg = AI_PROVIDERS[currentModelConfig.provider];
+    const badge = document.getElementById('current-model-badge');
+    if (badge) {
+        badge.textContent = currentModelConfig.model;
+        badge.className = `text-[9px] px-1.5 py-0.5 rounded font-bold text-white ${providerCfg.color}`;
+        badge.title = `Provider: ${providerCfg.name}`;
+    }
+    document.querySelectorAll('#chat-messages .ai-avatar').forEach(a => {
+        a.textContent = providerCfg.icon;
+        a.className = `ai-avatar w-7 h-7 rounded-full text-white grid place-items-center shrink-0 text-[10px] font-bold ${providerCfg.color}`;
+    });
+    
+    // Cập nhật selector
+    const selector = document.getElementById('model-selector');
+    if (selector) selector.value = currentModelConfig.fullId;
+}
+
+function updateKeyBadge() {
+    const ok = hasAPIKey();
+    const viaServer = serverHasKey(currentModelConfig.provider);
+    const b = document.getElementById('badge-api-mode');
+    if (b) {
+        b.textContent = ok ? (viaServer ? 'Live · .env' : 'Live') : 'Mock';
+        b.className = `text-[9px] px-1.5 py-0.5 rounded font-bold text-white ${ok ? 'bg-emerald-600' : 'bg-amber-500'}`;
+        b.title = viaServer ? 'Key lấy từ .env qua dev_server.js' : (ok ? 'Key lưu trong localStorage' : 'Chưa có key → mock mode');
+    }
+}
+
+// Load model đã lưu khi khởi động
+function loadSavedModel() {
+    const saved = localStorage.getItem('pixi_current_model');
+    if (saved) {
+        const [provider, model] = saved.split(':');
+        if (AI_PROVIDERS[provider] && AI_PROVIDERS[provider].models.includes(model)) {
+            currentModelConfig = {
+                provider,
+                model,
+                fullId: saved
+            };
+        }
+    }
+    updateModelBadge();
+}
+
+/* =====================================================================
+   svg_character.js â€” load SVG nhÃ¢n váº­t (do AI sinh) thÃ nh rig Spine-style
+   ---------------------------------------------------------------------
+   CÃ¡ch hoáº¡t Ä‘á»™ng:
+   1. Äá»c file SVG (knight_ai.svg). Má»—i <g id="..."> lÃ  1 bá»™ pháº­n (part).
+   2. Vá»›i má»—i group: Ä‘o bbox (getBBox) â†’ táº¡o bone táº¡i Ä‘iá»ƒm neo (pivot),
+      gáº¯n group Ä‘Ã³ vÃ o container bone (nhÆ° attachment).
+   3. Skeleton = SpineSkeleton cÃ³ sáºµn (spine_rig.js), bone theo cÃ¢y giáº£i pháº«u.
+   4. Animation: dÃ¹ng AnimationSystem cÃ³ sáºµn (clip idle/walk/attack...).
+   ===================================================================== */
+
+const SVG_BONES = [
+    { name: 'root', parent: null, x: 0, y: 0, len: 20 },
+    { name: 'hips', parent: 'root', x: 0, y: 0, len: 30 },
+    { name: 'leg_upper_L', parent: 'hips', x: -18, y: 4, len: 55 },
+    { name: 'leg_lower_L', parent: 'leg_upper_L', x: 0, y: 55, len: 50 },
+    { name: 'foot_L', parent: 'leg_lower_L', x: 0, y: 50, len: 26 },
+    { name: 'leg_upper_R', parent: 'hips', x: 18, y: 4, len: 55 },
+    { name: 'leg_lower_R', parent: 'leg_upper_R', x: 0, y: 55, len: 50 },
+    { name: 'foot_R', parent: 'leg_lower_R', x: 0, y: 50, len: 26 },
+    { name: 'torso', parent: 'hips', x: 0, y: -28, len: 70 },
+    { name: 'neck', parent: 'torso', x: 0, y: -64, len: 12 },
+    { name: 'head', parent: 'neck', x: 0, y: 0, len: 60 },
+    { name: 'arm_upper_L', parent: 'torso', x: -30, y: -52, len: 42 },
+    { name: 'arm_lower_L', parent: 'arm_upper_L', x: 0, y: 42, len: 38 },
+    { name: 'hand_L', parent: 'arm_lower_L', x: 0, y: 38, len: 24 },
+    { name: 'arm_upper_R', parent: 'torso', x: 30, y: -52, len: 42 },
+    { name: 'arm_lower_R', parent: 'arm_upper_R', x: 0, y: 42, len: 38 },
+    { name: 'hand_R', parent: 'arm_lower_R', x: 0, y: 38, len: 24 },
+    { name: 'weapon', parent: 'hand_R', x: 8, y: 0, len: 60, dir: -15 }
+];
+
+/** map tÃªn bone â†’ id group trong SVG (AI cÃ³ thá»ƒ Ä‘áº·t hÆ¡i khÃ¡c) */
+const SVG_PART_ALIASES = {
+    root: null, hips: ['hips', 'pelvis', 'hip'],
+    torso: ['torso', 'chest', 'body'],
+    neck: null, head: ['head', 'helmet', 'face'],
+    arm_upper_L: ['arm_upper_L', 'arm_upper_left', 'upper_arm_L', 'arm_L', 'shoulder_L'],
+    arm_lower_L: ['arm_lower_L', 'forearm_L', 'lower_arm_L'],
+    hand_L: ['hand_L', 'fist_L', 'palm_L'],
+    arm_upper_R: ['arm_upper_R', 'arm_upper_right', 'upper_arm_R', 'arm_R', 'shoulder_R'],
+    arm_lower_R: ['arm_lower_R', 'forearm_R', 'lower_arm_R'],
+    hand_R: ['hand_R', 'fist_R', 'palm_R'],
+    leg_upper_L: ['leg_upper_L', 'thigh_L', 'upper_leg_L', 'leg_L'],
+    leg_lower_L: ['leg_lower_L', 'shin_L', 'calf_L', 'lower_leg_L'],
+    foot_L: ['foot_L', 'feet_L', 'boot_L'],
+    leg_upper_R: ['leg_upper_R', 'thigh_R', 'upper_leg_R', 'leg_R'],
+    leg_lower_R: ['leg_lower_R', 'shin_R', 'calf_R', 'lower_leg_R'],
+    foot_R: ['foot_R', 'feet_R', 'boot_R'],
+    weapon: ['sword', 'weapon', 'blade', 'weapon_blade']
+};
+
+const SvgCharacter = {
+    loaded: false, groups: {}, boneById: {}, skel: null,
+
+    /** parse text SVG â†’ DOM, tráº£ vá» map id group â†’ element (Ä‘Ã£ strip transform gá»‘c) */
+    parse(svgText) {
+        const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+        const svg = doc.querySelector('svg');
+        if (!svg) throw new Error('SVG khÃ´ng há»£p lá»‡');
+        // xoÃ¡ script/style Ä‘á»ƒ an toÃ n
+        svg.querySelectorAll('script, style, foreignObject').forEach(n => n.remove());
+        const groups = {};
+        svg.querySelectorAll('g[id]').forEach(g => { groups[g.id] = g; });
+        // group khÃ´ng cÃ³ id nhÆ°ng náº±m trong group cÃ³ id â†’ Ä‘Ã£ náº±m trong groups cá»§a cha
+        return { svg, groups };
+    },
+
+    /** Ä‘o bbox cá»§a 1 group (tÃ­nh cáº£ transform) â€” dÃ¹ng getBBox cá»§a chÃ­nh group trong svg táº¡m */
+    measure(tempSvg, groupEl) {
+        // groupEl Ä‘ang náº±m trong tempSvg (Ä‘Ã£ gáº¯n vÃ o DOM táº¡m) â†’ getBBox chÃ­nh xÃ¡c
+        try {
+            const b = groupEl.getBBox();
+            return { x: b.x, y: b.y, w: b.width, h: b.height };
+        } catch (e) { return null; }
+    },
+
+    /**
+     * Load SVG â†’ build skeleton + gáº¯n part.
+     * @param {string} svgText ná»™i dung file .svg
+     * @param {EditorScene} scene scene PixiJS hiá»‡n táº¡i
+     */
+    async load(svgText, scene) {
+        const { svg, groups } = this.parse(svgText);
+        // svg táº¡m áº©n trong DOM Ä‘á»ƒ getBBox hoáº¡t Ä‘á»™ng
+        const holder = document.createElement('div');
+        // render đúng kích thước viewBox gốc, nếu không getBBox sẽ bị scale lệch
+        const vbW = (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || 200;
+        const vbH = (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.height) || 300;
+        holder.style.cssText = 'position:fixed;left:-9999px;top:0;width:' + vbW + 'px;height:' + vbH + 'px;';
+        holder.appendChild(document.importNode(svg, true));
+        document.body.appendChild(holder);
+        const liveSvg = holder.querySelector('svg');
+        const liveGroups = {};
+        liveSvg.querySelectorAll('g[id]').forEach(g => { liveGroups[g.id] = g; });
+
+        // 1) Ä‘o bbox cá»§a tá»«ng id group â†’ map boneName â†’ box (theo há»‡ toáº¡ Ä‘á»™ SVG)
+        const boxes = {};
+        for (const [boneName, ids] of Object.entries(SVG_PART_ALIASES)) {
+            if (!ids) continue;
+            for (const id of ids) {
+                const el = liveGroups[id];
+                if (!el) continue;
+                const bb = this.measure(liveSvg, el);
+                if (bb && bb.w > 1 && bb.h > 1) { boxes[boneName] = { id, ...bb }; break; }
+            }
+        }
+        holder.remove();
+        if (!boxes.torso || !boxes.head) throw new Error('SVG thiáº¿u part torso/head (cáº§n <g id="torso"> vÃ  <g id="head">)');
+
+        /* 2) Dựng xương từ bbox THẬT của từng group (toạ độ tuyệt đối của SVG).
+   Mỗi bone nằm ở KHỚP (đầu trên của part); part vẽ bằng frame tuyệt đối.
+   Gốc chọn = tâm khung chậu (hips) để figure nằm quanh (0,0). */
+const cx = b => b.x + b.w / 2;
+const torso = boxes.torso;
+const hipsB = boxes.hips || { x: torso.x + torso.w * 0.15, y: torso.y + torso.h * 0.82, w: torso.w * 0.7, h: torso.h * 0.18 };
+const rootX = cx(hipsB);
+const rootY = hipsB.y + hipsB.h * 0.5;
+const headB = boxes.head;
+
+const joint = {
+    hips: { x: rootX, y: rootY },
+    torso: { x: cx(torso), y: torso.y },
+    neck: { x: cx(headB), y: headB.y + headB.h * 0.92 },
+    head: { x: cx(headB), y: headB.y + headB.h * 0.92 }
+};
+['L', 'R'].forEach(function (sd) {
+    var up = boxes['arm_upper_' + sd], lo = boxes['arm_lower_' + sd], hd = boxes['hand_' + sd];
+    if (up) joint['arm_upper_' + sd] = { x: cx(up), y: up.y + up.h * 0.12 };
+    if (lo) joint['arm_lower_' + sd] = { x: cx(lo), y: lo.y + lo.h * 0.08 };
+    if (hd) joint['hand_' + sd] = { x: cx(hd), y: hd.y + hd.h * 0.1 };
+    var lu = boxes['leg_upper_' + sd], ll = boxes['leg_lower_' + sd], ft = boxes['foot_' + sd];
+    if (lu) joint['leg_upper_' + sd] = { x: cx(lu), y: lu.y + lu.h * 0.05 };
+    if (ll) joint['leg_lower_' + sd] = { x: cx(ll), y: ll.y + ll.h * 0.05 };
+    if (ft) joint['foot_' + sd] = { x: cx(ft), y: ft.y + ft.h * 0.15 };
+});
+if (boxes.weapon) joint.weapon = { x: cx(boxes.weapon), y: boxes.weapon.y + boxes.weapon.h * 0.55 };
+
+const parentOf = { hips: 'root', torso: 'hips', neck: 'torso', head: 'neck', weapon: 'hand_R' };
+['L', 'R'].forEach(function (sd) {
+    parentOf['arm_upper_' + sd] = 'torso';
+    parentOf['arm_lower_' + sd] = 'arm_upper_' + sd;
+    parentOf['hand_' + sd] = 'arm_lower_' + sd;
+    parentOf['leg_upper_' + sd] = 'hips';
+    parentOf['leg_lower_' + sd] = 'leg_upper_' + sd;
+    parentOf['foot_' + sd] = 'leg_lower_' + sd;
+});
+
+/* toạ độ LOCAL so với cha (đúng cách Spine làm) */
+var defs = [{ name: 'root', parent: null, x: 0, y: 0, rotation: 0, length: 20 }];
+Object.keys(joint).forEach(function (name) {
+    if (name === 'root') return;
+    var p = parentOf[name];
+    var pj = joint[p] || { x: rootX, y: rootY };
+    var boxOfName = boxes[name] || torso;
+    defs.push({
+        name: name, parent: p,
+        x: +(joint[name].x - pj.x).toFixed(2),
+        y: +(joint[name].y - pj.y).toFixed(2),
+        rotation: 0,
+        length: Math.max(6, Math.round(boxOfName.h || 20))
+    });
+});
+
+        // 4) build skeleton
+        const skel = new SpineSkeleton();
+        skel.build(defs);
+        /* SpineRig.applyPose() gọi thẳng skel.setupPose() mỗi khung hình; skeleton do
+           SvgCharacter dựng trước đây thiếu hàm này (chỉ có setToSetupPose) nên phát clip
+           là lỗi "skel.setupPose is not a function". Gán alias để phát animation được. */
+        skel.setupPose = () => skel.setToSetupPose();
+
+        // 5) render tá»«ng group SVG thÃ nh texture Pixi (SVG â†’ canvas qua Image)
+        // rÃ  soÃ¡t kÃ­ch thÆ°á»›c váº½
+        const vb = (svg.viewBox && svg.viewBox.baseVal) || { width: 400, height: 600 };
+        const scale = 1.4;   // phÃ³ng nháº¹ cho rÃµ
+        this.groups = {};
+        this.boneById = {};
+        let count = 0;
+        for (const [boneName, box] of Object.entries(boxes)) {
+            const gEl = liveGroups[box.id];
+            if (!gEl) continue;
+            const tex = await this.svgGroupToTexture(holder2 => holder2, gEl, box, scale, liveSvg, vb);
+            if (!tex) continue;
+            const bone = skel.bones.get(boneName);
+            if (!bone) continue;
+            const sp = new PIXI.Sprite(tex);
+            // pivot = Ä‘iá»ƒm neo cá»§a part (nÆ¡i bone báº¯t Ä‘áº§u)
+            const pivot = this.pivotFor(boneName, box);
+            sp.anchor.set(0, 0);
+            /* Sprite là con của container bone → toạ độ LOCAL so với khớp của bone.
+               Nhờ vậy chỉ bone quyết định vị trí/xoay, part tự đúng chỗ như giấy cắt. */
+            sp.pivot.set(0, 0);
+            sp.rotation = 0;
+            var jp = joint[boneName] || { x: rootX, y: rootY };
+            /* Texture đã phóng to `scale` lần, nhưng sprite nằm trong hệ toạ độ SVG
+               → phải thu nhỏ sprite lại 1/scale để khớp với bone. */
+            sp.scale.set(1 / scale, 1 / scale);
+            sp.pivot.set(jp.x - (box.x - 2), jp.y - (box.y - 2));
+            sp.position.set(0, 0);
+            sp.rotation = 0;
+            sp.__joint = jp;
+            bone.container.addChild(sp);
+            bone.sprite = sp;
+            bone.partKey = box.id;
+            this.groups[boneName] = { id: box.id, box, sprite: sp };
+            this.boneById[box.id] = boneName;
+            count++;
+        }
+        this.skel = skel;
+        this.loaded = count > 0;
+
+        // 6) thay rig trong scene
+        this.installIntoScene(scene, skel);
+        return { skel, count, boxes };
+    },
+
+    /** render 1 group SVG â†’ PIXI.Texture báº±ng canvas (dÃ¹ng XMLSerializer + Image) */
+    async svgGroupToTexture(_, gEl, box, scale, liveSvg, vb) {
+        // serialize riÃªng group nÃ y thÃ nh 1 svg má»›i vá»›i cÃ¹ng viewBox Ä‘á»ƒ giá»¯ toáº¡ Ä‘á»™
+        const clone = gEl.cloneNode(true);
+        // texture = ĐÚNG BBOX của part (không lấy toàn khung), nên mỗi sprite chỉ chứa hình của nó
+        const pad = 2;
+        const vx = box.x - pad, vy = box.y - pad;
+        const vw = box.w + pad * 2, vh = box.h + pad * 2;
+        const w = Math.max(2, Math.ceil(vw * scale)), h = Math.max(2, Math.ceil(vh * scale));
+        const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vx} ${vy} ${vw} ${vh}" width="${w}" height="${h}">${new XMLSerializer().serializeToString(clone)}</svg>`;
+        const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+        const img = new Image();
+        await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0);
+        return PIXI.Texture.from(cv);
+    },
+
+    /** Ä‘iá»ƒm neo theo loáº¡i part (tá»‰ lá»‡ trong bbox) */
+    pivotFor(boneName, box) {
+        if (/^head/.test(boneName)) return [0.5, 0.92];          // cá»• á»Ÿ Ä‘Ã¡y Ä‘áº§u
+        if (/^torso|body/.test(boneName)) return [0.5, 0.02];     // Ä‘á»‰nh thÃ¢n
+        if (/^hips|pelvis/.test(boneName)) return [0.5, 0.10];
+        if (/^leg_upper/.test(boneName)) return [0.5, 0.12];
+        if (/^leg_lower/.test(boneName)) return [0.5, 0.08];
+        if (/^foot/.test(boneName)) return [0.42, 0.15];
+        if (/^arm_upper/.test(boneName)) return [boneName.endsWith('L') ? 0.18 : 0.82, 0.15];
+        if (/^arm_lower/.test(boneName)) return [0.5, 0.10];
+        if (/^hand/.test(boneName)) return [0.5, 0.15];
+        if (/^weapon|sword/.test(boneName)) return [0.12, 0.5];   // chuÃ´i
+        return [0.5, 0.5];
+    },
+
+    /** thay rigLayer trong scene báº±ng skeleton SVG */
+    installIntoScene(scene, skel) {
+        if (scene.rigLayer) scene.rigLayer.destroy({ children: true });
+        scene.rigLayer = new PIXI.Container();
+        scene.rigLayer.label = 'spine_layer_svg';
+        scene.world.addChild(scene.rigLayer);
+        scene.rigLayer.addChild(skel.bones.get('root').container);
+        scene.spine = skel;
+        scene.spineDebug = new PIXI.Graphics();
+        scene.rigLayer.addChild(scene.spineDebug);
+        scene.spineDebug.visible = (document.getElementById('chk-skeleton-toggle') || {}).checked ?? true;
+        skel.setupPose = () => skel.setToSetupPose();
+        skel.setupPose ? skel.setupPose() : skel.setToSetupPose();
+        skel.updateWorldTransform();
+        scene.rigReady = true;
+        scene.drawSpineDebug();
+        scene.layoutSpine();
+        setText('bone-count', skel.ordered.length);
+        renderSpineBonesList();
+    }
+};
+
+/* publish trá»±c tiáº¿p lÃªn window cá»§a TRANG nÃ y (khÃ´ng dÃ¹ng defaultView/unsafeWindow) */
+/* SvgCharacter dÃ¹ng trong cÃ¹ng scope engine */
+
+/* ---------------------------------------------------------------------
+   12. BOOT
+   --------------------------------------------------------------------- */
+function waitForLibs(timeout = 25000) {
+    return new Promise(resolve => {
+        const t0 = Date.now();
+        const tick = () => {
+            if (window.PIXI && window.PIXI.Application && window.SpineSkeleton) return resolve(true);
+            if (Date.now() - t0 > timeout) return resolve(false);
+            setTimeout(tick, 100);
+        };
+        tick();
+    });
+}
+
+window.addEventListener('load', async () => {
+    // export sớm: nếu boot ném lỗi / CDN chậm thì console vẫn dùng được engine
+    Object.assign(window, { Engine, PartAtlas, ATLAS_PARTS, AutoNamer, SpineRig, Chat });
+    window.Chat = Chat;
+    checkServerStatus();
+    loadSavedModel();
+    updateKeyBadge();
+    newChat();
+
+    const ok = await waitForLibs();
+    if (!ok) { setStatus('Không tải được PixiJS/Spine từ CDN'); return; }
+
+    try {
+        await Engine.boot();
+        window.__RIG_DEBUG_HOOK = { Engine, SpineRig, PartAtlas, build: () => SpineRig.build(Engine.scene, false) };
+        // ?demo=svg → tự rig nhân vật SVG (dùng để test/khởi động nhanh)
+        if (/[?&]demo=svg/.test(location.search)) {
+            const r = await fetch('knight_ai.svg').then(x => x.text()).catch(() => '');
+            if (r) {
+                const res = await SvgCharacter.load(r, Engine.scene);
+                Engine.animation.loadClips(SVG_CLIPS(res.skel), true);
+                setStatus(`DEMO SVG: ${res.count} parts · ${res.skel.ordered.length} bones`);
+                if (/[?&]dump=1/.test(location.search)) {
+                    const pre = document.createElement('pre');
+                    pre.id = 'rig-dump';
+                    pre.style.cssText = 'position:fixed;left:0;top:0;z-index:9999;font:10px monospace;background:#fff;max-height:40vh;overflow:auto';
+                    pre.textContent = res.skel.ordered.map(b => `${b.name} q=(${b.qx.toFixed(1)},${b.qy.toFixed(1)}) rot=${b.qrot.toFixed(1)} spr=(${b.sprite ? b.sprite.position.x.toFixed(1) + ',' + b.sprite.position.y.toFixed(1) : '-'}) tex=${b.sprite ? Math.round(b.sprite.texture.width) + 'x' + Math.round(b.sprite.texture.height) : '-'}`).join('\n');
+                    document.body.appendChild(pre);
+                }
+            }
+        }
+        addChatMessage('assistant',
+            '**Xin chào!** Mình là trợ lý rig & animation (mô hình xương kiểu Spine) trong PixiJS v8.\n\n' +
+            '- **Auto Rig (Spine)** ở sidebar để dựng lại skeleton\n' +
+            '- **Auto name bộ phận** để tự nhận diện 27 part của atlas\n' +
+            '- Nhắn mình để sinh rig/animation mới (cần OpenAI API key)');
+    } catch (e) {
+        console.error(e);
+        // stack hiện luôn trong status để debug nhanh trên UI
+        setStatus('Lỗi khởi động: ' + e.message + ' @ ' + String((e.stack || '').split('\n')[1] || '').trim());
+    }
+
+    // event wiring
+    const bind = (id, ev, fn) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener(ev, fn);
+    };
+    bind('select-bone-part', 'change', e => Engine.assignPart(e.target.value));
+    bind('inp-x', 'change', () => Engine.applyBoneEdit());
+    bind('inp-y', 'change', () => Engine.applyBoneEdit());
+    bind('inp-rot', 'change', () => Engine.applyBoneEdit());
+    bind('chat-input', 'keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+    });
+    bind('btn-send-chat', 'click', () => sendChat());
+});
+
+/* exports */
+Object.assign(window, {
+    Engine, PartAtlas, ATLAS_PARTS, AutoNamer, SpineRig, Chat,
+    sendChat, quickPrompt, newChat, loadSession, toggleSidebar,
+    autoNameParts, autoRigSpine, exportSpineJSON, downloadPackage,
+    switchCharacter, togglePlayState, toggleSkeletonView,
+    openKeyModal, closeKeyModal, saveAllKeys, clearAllKeys, updateKeyBadge,
+    changeModel, updateModelBadge, loadSavedModel,
+    applyAICode, applyAllAICode, applyAIJSON, applyAIRig, parseAIJSON, sanitizeClips, renderPartsLibrary, toast,
+    deepseekProRig, fallbackModelConfig, autoPickRigModel, autoModelCandidates, providerReady,
+    RIG_MODEL_PREFERENCE, askAndApply, PRO_RIG_PROMPT,
+    AI_PROVIDERS, checkServerStatus, hasAPIKey, ServerStatus,
+    aiCreateCharacter, aiGenerateRasterImage, aiGenerateSVG, SVG_CLIPS, SvgCharacter,
+    // ảnh trong chat + viewer mở rộng
+    ChatImages, ImageViewer, chatImageHtml, chatImageError, addChatMessage,
+    renderMd, renderMdInline, renderMdBlock, copyCode,
+    svgTextToDataUri, ensureSvgDisplaySize, decodeDataUriText, attrEsc
+});
+
+/* tab Parts / Assets */
+function setLibraryTab(tab) {
+    const tp = document.getElementById('tab-parts');
+    const ta = document.getElementById('tab-assets');
+    const tar = document.getElementById('tab-advanced-rig');
+    const taa = document.getElementById('tab-anim-ai');
+    const pp = document.getElementById('panel-parts');
+    const pa = document.getElementById('panel-assets');
+    const par = document.getElementById('advanced-rig-panel');
+    const paa = document.getElementById('anim-ai-panel');
+    const on = 'px-2 py-1 rounded bg-slate-900 text-white font-medium';
+    const off = 'px-2 py-1 rounded hover:bg-slate-100 font-medium';
+    if (tp) tp.className = tab === 'parts' ? on : off;
+    if (ta) ta.className = tab === 'assets' ? on : off;
+    if (tar) tar.className = tab === 'advanced' ? on : off;
+    if (taa) taa.className = tab === 'anim' ? on : off;
+    if (pp) pp.style.display = tab === 'parts' ? 'grid' : 'none';
+    if (pa) pa.style.display = tab === 'assets' ? 'grid' : 'none';
+    if (par) par.style.display = tab === 'advanced' ? 'block' : 'none';
+    if (paa) paa.style.display = tab === 'anim' ? 'block' : 'none';
+    if (tab === 'assets' && window.renderAssetLibrary) renderAssetLibrary();
+    if (tab === 'anim' && window.AnimAI) AnimAI.render();
+    // bảng Advanced Rig cần chỗ: mở rộng khối assets/bones khi đang ở tab này
+    const block = document.getElementById('library-block');
+    if (block) {
+        block.classList.toggle('h-[240px]', tab !== 'advanced' && tab !== 'anim');
+        block.classList.toggle('h-[430px]', tab === 'advanced' || tab === 'anim');
+    }
+    if (tab === 'advanced' || tab === 'anim') {
+        if (tab === 'advanced' && window.RigAdvanced) RigAdvanced.render();
+        // đổi chiều cao khối thư viện → viewport đổi → canh lại rig cho vừa khung
+        if (Engine.app && Engine.scene && Engine.scene.layoutSpine) Engine.scene.layoutSpine();
+    }
+}
+window.setLibraryTab = setLibraryTab;
+
+/* tab Setup / Animate / Advanced (nút Advanced mở bảng rig nâng cao) */
+function setWorkTab(tab) {
+    const on = 'px-2.5 py-1.5 rounded-md bg-slate-900 text-white font-medium';
+    const off = 'px-2.5 py-1.5 rounded-md hover:bg-slate-100 font-medium';
+    ['setup', 'animate', 'advanced'].forEach(k => {
+        const el = document.getElementById('tab-' + k);
+        if (el) el.className = k === tab ? on : off;
+    });
+    // Advanced = bảng rig nâng cao; các tab khác giữ nguyên thư viện (Setup: Parts, Animate: Assets)
+    setLibraryTab(tab === 'advanced' ? 'advanced' : (tab === 'anim' ? 'anim' : (tab === 'animate' ? 'assets' : 'parts')));
+}
+window.setWorkTab = setWorkTab;
+
+/* khởi tạo drop zone sau khi DOM sẵn sàng */
+if (window.initAssetDrop) {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAssetDrop);
+    } else { initAssetDrop(); }
+}
+
+/* =====================================================================
+   SVG CHARACTER RIG (gá»™p vÃ o engine Ä‘á»ƒ trÃ¡nh váº¥n Ä‘á» scope/thá»© tá»± script)
+   ===================================================================== */
